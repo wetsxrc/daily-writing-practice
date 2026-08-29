@@ -68,7 +68,7 @@ if st.button("🚀 Submit & Grade"):
         with st.spinner("Your AI teacher is reading and reviewing..."):
             try:
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel("gemini-1.5-flash-latest")
+                model = genai.GenerativeModel("gemini-2.5-flash")
 
                 prompt = f"""
                 You are an encouraging, warm, and friendly Grade 5 English teacher in Canada.
