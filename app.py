@@ -29,8 +29,7 @@ if "topic" not in st.session_state:
 # Display Current Topic
 st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
 
-if st.button("🔄 New Topic"):
-    st.session_state.topic = random.choice(TOPIC_BANK)
+  st.button("🔄 New Topic",on_click=change_topic)
 
 st.markdown("---")
 
