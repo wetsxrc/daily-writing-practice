@@ -67,7 +67,7 @@ def replenish_topic_bank_with_ai():
         new_prompts = []
         for line in raw_lines:
             line = line.strip().lstrip("-*• ").strip()
-            # Avoid adding duplicate prompts that exist or were used
+            # Avoid adding duplicate prompts that exist in current bank
             if line and line not in st.session_state.topic_bank:
                 new_prompts.append(line)
 
@@ -85,9 +85,9 @@ if "topic_bank" not in st.session_state:
     st.session_state.topic_bank = INITIAL_TOPIC_BANK.copy()
 
 
-# Helper function to pop and return a random topic (removes it from the pool)
-def get_and_remove_random_topic():
-    # Background check: if pool is small, replenish silent in background
+# Helper function to pick a random topic WITHOUT removing it
+def pick_random_topic():
+    # Background check: if pool is small, replenish silently
     if len(st.session_state.topic_bank) < 10:
         replenish_topic_bank_with_ai()
 
@@ -95,19 +95,23 @@ def get_and_remove_random_topic():
     if not st.session_state.topic_bank:
         st.session_state.topic_bank = INITIAL_TOPIC_BANK.copy()
 
-    # Pick a random index, remove (pop) it from list, and return it
-    random_index = random.randint(0, len(st.session_state.topic_bank) - 1)
-    return st.session_state.topic_bank.pop(random_index)
+    # If there's a current topic and more options exist, pick a different one
+    current = st.session_state.get("topic")
+    candidates = [t for t in st.session_state.topic_bank if t != current]
+
+    if candidates:
+        return random.choice(candidates)
+    return random.choice(st.session_state.topic_bank)
 
 
 # 2. Pick current topic initially
 if "topic" not in st.session_state:
-    st.session_state.topic = get_and_remove_random_topic()
+    st.session_state.topic = pick_random_topic()
 
 
-# Instant Topic Switch Function (0 delay + Pop/Delete used topic)
+# Instant Topic Switch Function (Just browse/switch, DO NOT delete)
 def switch_to_next_topic():
-    st.session_state.topic = get_and_remove_random_topic()
+    st.session_state.topic = pick_random_topic()
 
 
 # ---------------------------------------------------------
@@ -126,7 +130,7 @@ st.markdown("---")
 # Display Current Topic instantly
 st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
 
-# Instant topic change button
+# Instant topic change button (Keep topic in bank)
 st.button("🔄 New Topic", on_click=switch_to_next_topic)
 
 st.markdown("---")
@@ -260,6 +264,11 @@ if st.button("🚀 Submit & Grade"):
                     st.toast(f"📧 Sent {student_name}'s writing to parent's email!")
                 else:
                     st.caption(f"ℹ️ (Email notification status: {email_msg})")
+
+                # Remove the completed topic ONLY AFTER successful submission
+                completed_topic = st.session_state.topic
+                if completed_topic in st.session_state.topic_bank:
+                    st.session_state.topic_bank.remove(completed_topic)
 
             except Exception as e:
                 st.error(f"An error occurred during review: {e}")
