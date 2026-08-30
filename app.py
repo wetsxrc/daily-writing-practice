@@ -1,4 +1,7 @@
 import random
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 import google.generativeai as genai
 import streamlit as st
 
@@ -26,6 +29,50 @@ TOPIC_BANK = [
 # Function to pick a new topic
 def change_topic():
     st.session_state.topic = random.choice(TOPIC_BANK)
+
+
+# Function to send email notification to parent
+def send_email_to_parent(topic, student_text, ai_feedback):
+    sender = st.secrets.get("EMAIL_SENDER", "")
+    password = st.secrets.get("EMAIL_PASSWORD", "")
+    receiver = st.secrets.get("EMAIL_RECEIVER", "")
+
+    if not sender or not password or not receiver:
+        return False, "Email credentials not configured in Streamlit Secrets."
+
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = f"Daily Writing App <{sender}>"
+        msg["To"] = receiver
+        msg["Subject"] = f"📝 Daily Writing Submission from Lucas"
+
+        body = f"""Hi,
+
+Lucas has just submitted a new writing practice!
+
+📌 Topic:
+{topic}
+
+✍️ Lucas's Submission:
+{student_text}
+
+--------------------------------------------------
+🤖 AI Teacher Feedback & Review:
+{ai_feedback}
+
+---
+Sent automatically by Daily English Writing Challenge App.
+"""
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(sender, password)
+        server.send_message(msg)
+        server.quit()
+        return True, "Email sent successfully!"
+    except Exception as e:
+        return False, str(e)
 
 
 # Initialize Topic
@@ -106,7 +153,19 @@ if st.button("🚀 Submit & Grade"):
                 """
 
                 response = model.generate_content(prompt)
+                ai_feedback = response.text
+
                 st.success("🎉 Review Completed!")
-                st.markdown(response.text)
+                st.markdown(ai_feedback)
+
+                # Send email notification quietly
+                email_success, email_msg = send_email_to_parent(
+                    st.session_state.topic, user_input, ai_feedback
+                )
+                if email_success:
+                    st.toast("📧 Writing & Review sent to parent's email!")
+                else:
+                    st.caption(f"ℹ️ (Email notification status: {email_msg})")
+
             except Exception as e:
                 st.error(f"An error occurred during review: {e}")
