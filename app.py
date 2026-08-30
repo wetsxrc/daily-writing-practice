@@ -14,13 +14,16 @@ st.title("✍️ Daily English Writing Challenge")
 st.write("Welcome to your daily English writing space!")
 
 # ---------------------------------------------------------
-# Child Name Selection
+# Student Name Input
 # ---------------------------------------------------------
-student_name = st.selectbox(
-    "👤 Select your name / 请选择你的名字:",
-    ["Aiden", "Ethan"],
-    help="Select who is completing this writing exercise.",
+raw_name = st.text_input(
+    "👤 Enter your name / 请输入你的名字:",
+    placeholder="e.g. Aiden or Ethan",
+    help="Type your name so we can personalize your review!",
 )
+
+# Fallback to "Student" if left empty
+student_name = raw_name.strip() if raw_name.strip() else "Student"
 
 st.markdown("---")
 
@@ -42,7 +45,7 @@ def change_topic():
     st.session_state.topic = random.choice(TOPIC_BANK)
 
 
-# Function to send email notification to parent
+# Function to send email notification
 def send_email_to_parent(name, topic, student_text, ai_feedback):
     sender = st.secrets.get("EMAIL_SENDER", "")
     password = st.secrets.get("EMAIL_PASSWORD", "")
