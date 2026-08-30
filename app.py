@@ -13,6 +13,17 @@ st.set_page_config(
 st.title("✍️ Daily English Writing Challenge")
 st.write("Welcome to your daily English writing space!")
 
+# ---------------------------------------------------------
+# Child Name Selection
+# ---------------------------------------------------------
+student_name = st.selectbox(
+    "👤 Select your name / 请选择你的名字:",
+    ["Aiden", "Ethan"],
+    help="Select who is completing this writing exercise.",
+)
+
+st.markdown("---")
+
 # 2. Daily Topic Pool
 TOPIC_BANK = [
     "If you could create one new rule for recess at your school, what would it be and why?",
@@ -32,7 +43,7 @@ def change_topic():
 
 
 # Function to send email notification to parent
-def send_email_to_parent(topic, student_text, ai_feedback):
+def send_email_to_parent(name, topic, student_text, ai_feedback):
     sender = st.secrets.get("EMAIL_SENDER", "")
     password = st.secrets.get("EMAIL_PASSWORD", "")
     receiver = st.secrets.get("EMAIL_RECEIVER", "")
@@ -44,16 +55,18 @@ def send_email_to_parent(topic, student_text, ai_feedback):
         msg = MIMEMultipart()
         msg["From"] = f"Daily Writing App <{sender}>"
         msg["To"] = receiver
-        msg["Subject"] = f"📝 Daily Writing Submission from Lucas"
+        msg["Subject"] = f"📝 Daily Writing Submission from {name}"
 
         body = f"""Hi,
 
-Lucas has just submitted a new writing practice!
+{name} has just submitted a new writing practice!
+
+👤 Student: {name}
 
 📌 Topic:
 {topic}
 
-✍️ Lucas's Submission:
+✍️ {name}'s Submission:
 {student_text}
 
 --------------------------------------------------
@@ -89,7 +102,7 @@ st.markdown("---")
 
 # 3. Input Text Area and Word Count Limit
 user_input = st.text_area(
-    "✍️ Write your response below (Max 200 words):",
+    f"✍️ Write your response below, {student_name}! (Max 200 words):",
     height=200,
     placeholder="Start typing your entry here...",
 )
@@ -118,14 +131,14 @@ if st.button("🚀 Submit & Grade"):
             "API Key is missing. Please configure GEMINI_API_KEY in your Streamlit Secrets!"
         )
     else:
-        with st.spinner("Your AI teacher is reading and reviewing..."):
+        with st.spinner(f"Your AI teacher is reading {student_name}'s writing..."):
             try:
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel("gemini-3.6-flash")
 
                 prompt = f"""
                 You are an encouraging, warm, and friendly Grade 5 English teacher in Canada.
-                Review the following writing response submitted by an ESL Grade 5 student.
+                Review the following writing response submitted by an ESL Grade 5 student named {student_name}.
 
                 Topic Prompt: "{st.session_state.topic}"
                 Student Writing: "{user_input}"
@@ -155,15 +168,15 @@ if st.button("🚀 Submit & Grade"):
                 response = model.generate_content(prompt)
                 ai_feedback = response.text
 
-                st.success("🎉 Review Completed!")
+                st.success(f"🎉 Great job, {student_name}! Review Completed!")
                 st.markdown(ai_feedback)
 
                 # Send email notification quietly
                 email_success, email_msg = send_email_to_parent(
-                    st.session_state.topic, user_input, ai_feedback
+                    student_name, st.session_state.topic, user_input, ai_feedback
                 )
                 if email_success:
-                    st.toast("📧 Writing & Review sent to parent's email!")
+                    st.toast(f"📧 Sent {student_name}'s writing to parent's email!")
                 else:
                     st.caption(f"ℹ️ (Email notification status: {email_msg})")
 
