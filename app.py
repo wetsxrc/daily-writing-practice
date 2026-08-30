@@ -13,6 +13,54 @@ st.set_page_config(
 st.title("✍️ Daily English Writing Challenge")
 st.write("Welcome to your daily English writing space!")
 
+# Fetch Gemini API Key
+api_key = st.secrets.get("GEMINI_API_KEY", "")
+
+
+# ---------------------------------------------------------
+# Dynamic Topic Generation via Gemini AI
+# ---------------------------------------------------------
+def generate_ai_topic():
+    if not api_key:
+        # Fallback topic if API key is missing
+        return "Describe your ideal weekend adventure with your family or friends."
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-3.6-flash")
+
+        topic_prompt = """
+        Generate 1 creative, engaging, and age-appropriate daily English writing prompt for Grade 5 ESL students in Canada.
+        
+        Requirements:
+        - Theme: Fun, relatable, imaginative, or school/life-related (e.g., pets, mysterious discoveries, space, rules, favorite foods, hobbies).
+        - Length: Exactly 1 or 2 clear sentences.
+        - Tone: Encouraging and easy to understand for 10-11 year olds.
+        - Output format: Return ONLY the prompt text, no intro, no bullet points, and no quotes.
+        """
+
+        response = model.generate_content(topic_prompt)
+        return response.text.strip()
+    except Exception:
+        # Fallback default list if API network call encounters an issue
+        fallback_list = [
+            "If you could invent a new subject to learn at school, what would it be and why?",
+            "Imagine you woke up today with the superpower to fly. Describe your first flight!",
+            "What is the best gift you have ever given or received? Why was it special?",
+            "If you could build a secret hideout anywhere, where would it be and what inside?",
+        ]
+        return random.choice(fallback_list)
+
+
+# Function to handle button click for new topic
+def refresh_topic():
+    st.session_state.topic = generate_ai_topic()
+
+
+# Initialize Topic in Session State if not set
+if "topic" not in st.session_state:
+    st.session_state.topic = generate_ai_topic()
+
 # ---------------------------------------------------------
 # Student Name Input
 # ---------------------------------------------------------
@@ -27,25 +75,18 @@ student_name = raw_name.strip() if raw_name.strip() else "Student"
 
 st.markdown("---")
 
-# 2. Daily Topic Pool
-TOPIC_BANK = [
-    "If you could create one new rule for recess at your school, what would it be and why?",
-    "Describe your favorite afternoon snack using as many sensory words (sight, smell, taste) as possible.",
-    "If your pet or a favorite animal could talk for 10 minutes, what questions would you ask it?",
-    "What was the most interesting thing that happened in your class or school this week?",
-    "Imagine you found a mysterious small key in your room. What hidden box or room does it open?",
-    "What is your favorite outdoor activity to play with friends, and how do you play it?",
-    "If you could travel anywhere in Canada tomorrow, where would you go and what would you do there?",
-    "If you could design a new video game or board game, what would the goal of the game be?",
-]
+# Display Current AI-Generated Topic
+st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
+
+# New Topic Button triggers AI dynamic generation
+st.button("🔄 Generate New Topic", on_click=refresh_topic)
+
+st.markdown("---")
 
 
-# Function to pick a new topic
-def change_topic():
-    st.session_state.topic = random.choice(TOPIC_BANK)
-
-
-# Function to send email notification
+# ---------------------------------------------------------
+# Function to send email notification to parent
+# ---------------------------------------------------------
 def send_email_to_parent(name, topic, student_text, ai_feedback):
     sender = st.secrets.get("EMAIL_SENDER", "")
     password = st.secrets.get("EMAIL_PASSWORD", "")
@@ -91,19 +132,9 @@ Sent automatically by Daily English Writing Challenge App.
         return False, str(e)
 
 
-# Initialize Topic
-if "topic" not in st.session_state:
-    st.session_state.topic = random.choice(TOPIC_BANK)
-
-# Display Current Topic
-st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
-
-# New Topic Button
-st.button("🔄 New Topic", on_click=change_topic)
-
-st.markdown("---")
-
+# ---------------------------------------------------------
 # 3. Input Text Area and Word Count Limit
+# ---------------------------------------------------------
 user_input = st.text_area(
     f"✍️ Write your response below, {student_name}! (Max 200 words):",
     height=200,
@@ -120,10 +151,9 @@ if word_count > 200:
 else:
     st.caption(f"📝 Word Count: **{word_count} / 200** words")
 
-# 4. Fetch Gemini API Key
-api_key = st.secrets.get("GEMINI_API_KEY", "")
-
-# 5. Submit & Grading Logic
+# ---------------------------------------------------------
+# 4. Submit & Grading Logic
+# ---------------------------------------------------------
 if st.button("🚀 Submit & Grade"):
     if not user_input.strip():
         st.warning("Please write something before submitting!")
