@@ -10,7 +10,7 @@ st.set_page_config(
 st.title("✍️ Daily English Writing Challenge")
 st.write("Welcome to your daily English writing space!")
 
-# 2. Daily Topic Pool (tailored for Grade 5 students in Canada)
+# 2. Daily Topic Pool
 TOPIC_BANK = [
     "If you could create one new rule for recess at your school, what would it be and why?",
     "Describe your favorite afternoon snack using as many sensory words (sight, smell, taste) as possible.",
@@ -22,6 +22,12 @@ TOPIC_BANK = [
     "If you could design a new video game or board game, what would the goal of the game be?",
 ]
 
+
+# Function to pick a new topic
+def change_topic():
+    st.session_state.topic = random.choice(TOPIC_BANK)
+
+
 # Initialize Topic
 if "topic" not in st.session_state:
     st.session_state.topic = random.choice(TOPIC_BANK)
@@ -29,6 +35,7 @@ if "topic" not in st.session_state:
 # Display Current Topic
 st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
 
+# New Topic Button
 st.button("🔄 New Topic", on_click=change_topic)
 
 st.markdown("---")
@@ -50,7 +57,7 @@ if word_count > 200:
 else:
     st.caption(f"📝 Word Count: **{word_count} / 200** words")
 
-# 4. Fetch Gemini API Key from Streamlit Secrets
+# 4. Fetch Gemini API Key
 api_key = st.secrets.get("GEMINI_API_KEY", "")
 
 # 5. Submit & Grading Logic
