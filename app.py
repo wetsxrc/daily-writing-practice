@@ -207,7 +207,9 @@ else:
 # Submit & Grading Logic
 # ---------------------------------------------------------
 if st.button("🚀 Submit & Grade"):
-    if not user_input.strip():
+    if not raw_name.strip():
+        st.warning("⚠️ Please enter your name before submitting! / 请先输入你的名字后再提交！")
+    elif not user_input.strip():
         st.warning("Please write something before submitting!")
     elif word_count > 200:
         st.warning("Please shorten your text to 200 words or less!")
