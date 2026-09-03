@@ -109,7 +109,7 @@ def switch_to_next_topic():
 # Student Name Input
 # ---------------------------------------------------------
 raw_name = st.text_input(
-    "👤 Enter your name / 请输入你的名字:",
+    "👤 Enter your name:",
     placeholder="e.g. Aiden or Ethan",
     help="Type your name so we can personalize your review!",
 )
