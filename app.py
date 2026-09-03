@@ -67,35 +67,28 @@ def replenish_topic_bank_with_ai():
         new_prompts = []
         for line in raw_lines:
             line = line.strip().lstrip("-*• ").strip()
-            # Avoid adding duplicate prompts that exist in current bank
             if line and line not in st.session_state.topic_bank:
                 new_prompts.append(line)
 
-        # Add unique new prompts to our session state bank
         st.session_state.topic_bank.extend(new_prompts)
     except Exception:
-        pass  # If AI expansion fails, silently fallback to remaining bank
+        pass
 
 
 # ---------------------------------------------------------
 # Initialize State for Topics
 # ---------------------------------------------------------
-# 1. Initialize Topic Bank
 if "topic_bank" not in st.session_state:
     st.session_state.topic_bank = INITIAL_TOPIC_BANK.copy()
 
 
-# Helper function to pick a random topic WITHOUT removing it
 def pick_random_topic():
-    # Background check: if pool is small, replenish silently
     if len(st.session_state.topic_bank) < 10:
         replenish_topic_bank_with_ai()
 
-    # Safety check if bank ever becomes empty
     if not st.session_state.topic_bank:
         st.session_state.topic_bank = INITIAL_TOPIC_BANK.copy()
 
-    # If there's a current topic and more options exist, pick a different one
     current = st.session_state.get("topic")
     candidates = [t for t in st.session_state.topic_bank if t != current]
 
@@ -104,12 +97,10 @@ def pick_random_topic():
     return random.choice(st.session_state.topic_bank)
 
 
-# 2. Pick current topic initially
 if "topic" not in st.session_state:
     st.session_state.topic = pick_random_topic()
 
 
-# Instant Topic Switch Function (Just browse/switch, DO NOT delete)
 def switch_to_next_topic():
     st.session_state.topic = pick_random_topic()
 
@@ -127,10 +118,7 @@ student_name = raw_name.strip() if raw_name.strip() else "Student"
 
 st.markdown("---")
 
-# Display Current Topic instantly
 st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
-
-# Instant topic change button (Keep topic in bank)
 st.button("🔄 New Topic", on_click=switch_to_next_topic)
 
 st.markdown("---")
@@ -188,17 +176,20 @@ Sent automatically by Daily English Writing Challenge App.
 # Input Text Area and Word Count Limit
 # ---------------------------------------------------------
 user_input = st.text_area(
-    f"✍️ Write your response below, {student_name}! (Max 200 words):",
-    height=200,
-    placeholder="Start typing your entry here...",
+    f"✍️ Write your response below, {student_name}! (Aim for 100-200 words):",
+    height=220,
+    placeholder="Start typing your entry here... Challenge yourself to reach at least 100 words by adding details, reasons, and feelings!",
 )
 
-# Real-time word count calculation
 word_count = len(user_input.split()) if user_input.strip() else 0
 
 if word_count > 200:
     st.error(
         f"⚠️ Word count: {word_count} words. You have exceeded the 200-word limit! Please shorten your text."
+    )
+elif word_count > 0 and word_count < 50:
+    st.warning(
+        f"💡 Current Word Count: **{word_count}** words. Good start! Can you add more details or examples to break 100 words?"
     )
 else:
     st.caption(f"📝 Word Count: **{word_count} / 200** words")
@@ -208,7 +199,9 @@ else:
 # ---------------------------------------------------------
 if st.button("🚀 Submit & Grade"):
     if not raw_name.strip():
-        st.warning("⚠️ Please enter your name before submitting!")
+        st.warning(
+            "⚠️ Please enter your name before submitting! / 请先输入你的名字后再提交！"
+        )
     elif not user_input.strip():
         st.warning("Please write something before submitting!")
     elif word_count > 200:
@@ -224,32 +217,41 @@ if st.button("🚀 Submit & Grade"):
                 model = genai.GenerativeModel("gemini-3.6-flash")
 
                 prompt = f"""
-                You are an encouraging, warm, and friendly Grade 5 English teacher in Canada.
+                You are an encouraging, inspiring, and friendly Grade 5 English teacher in Canada.
                 Review the following writing response submitted by an ESL Grade 5 student named {student_name}.
 
                 Topic Prompt: "{st.session_state.topic}"
                 Student Writing: "{user_input}"
+                Current Word Count: {word_count} words.
+
+                Your main goal is to guide the student to EXPAND their writing to at least 100+ words using richer vocabulary, varied sentence structures, and vivid details.
 
                 Please provide feedback strictly in English, formatted in Markdown as follows:
 
                 ### 📊 Score & Overall Impression
                 * **Overall Score**: [X]/10
                 * **Grammar & Spelling**: [X]/5
-                * **Vocabulary**: [X]/5
-                * **Ideas & Relevance**: [X]/5
+                * **Vocabulary & Word Choice**: [X]/5
+                * **Content Expansion & Details**: [X]/5
 
                 ### 🌟 What You Did Great
-                - Point 1 (Highlight a good sentence or clever idea)
-                - Point 2 (Highlight effective vocabulary usage)
+                - Point 1 (Highlight a good sentence, creative idea, or vocabulary choice)
+                - Point 2 (Highlight effort or clear thought)
 
                 ### ✏️ Corrections & Improvements
-                List any grammar or spelling mistakes clearly using this format:
+                List any grammar, spelling, or punctuation mistakes clearly:
                 - **Original**: "[Original sentence with error]"
                 - **Correction**: "[Corrected sentence]"
                 - **Why**: [Brief, simple explanation suitable for Grade 5]
 
-                ### 🚀 Level-Up Suggestion
-                Provide 1 or 2 upgraded sentence structures or higher-level vocabulary words that could make this writing even better.
+                ### 💡 How to Expand Your Writing (Break 100 Words!)
+                Give {student_name} 3 concrete ways to add more content and reach 100+ words:
+                1. **Add Sensory Details**: [Suggest specific sight, sound, or feeling details they could add]
+                2. **Explain the 'Why' & Reasons**: [Suggest a question they can answer to explain their thoughts further]
+                3. **Vocabulary & Sentence Upgrade**: Show how to turn one simple sentence from their text into a compound/complex sentence with higher-level adjectives/verbs.
+
+                ### 🚀 Model Expansion (Example Version: 100-120 Words)
+                Rewrite {student_name}'s original ideas into an expanded, high-level Grade 5 paragraph (~100-120 words). Keep their core story/idea, but enrich it with advanced vocabulary, transition words (e.g., Furthermore, Suddenly, As a result), and vivid details so they can learn by example.
                 """
 
                 response = model.generate_content(prompt)
