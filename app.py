@@ -1,3 +1,5 @@
+import json
+import os
 import random
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -15,6 +17,32 @@ st.write("Welcome to your daily English writing space!")
 
 # Fetch Gemini API Key
 api_key = st.secrets.get("GEMINI_API_KEY", "")
+
+# ---------------------------------------------------------
+# Persistent Storage for Completed Topics (Prevents Duplicates)
+# ---------------------------------------------------------
+COMPLETED_FILE = "completed_topics.json"
+
+
+def load_completed_topics():
+    if os.path.exists(COMPLETED_FILE):
+        try:
+            with open(COMPLETED_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+    return set()
+
+
+def save_completed_topic(topic):
+    completed = load_completed_topics()
+    completed.add(topic)
+    try:
+        with open(COMPLETED_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(completed), f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------
 # Initial Default Topic Bank (Fast Loading Base)
@@ -64,10 +92,16 @@ def replenish_topic_bank_with_ai():
         response = model.generate_content(prompt)
         raw_lines = response.text.strip().split("\n")
 
+        completed = load_completed_topics()
         new_prompts = []
         for line in raw_lines:
             line = line.strip().lstrip("-*• ").strip()
-            if line and line not in st.session_state.topic_bank:
+            # Filter out duplicate and completed topics
+            if (
+                line
+                and line not in st.session_state.topic_bank
+                and line not in completed
+            ):
                 new_prompts.append(line)
 
         st.session_state.topic_bank.extend(new_prompts)
@@ -78,26 +112,43 @@ def replenish_topic_bank_with_ai():
 # ---------------------------------------------------------
 # Initialize State for Topics
 # ---------------------------------------------------------
+completed_set = load_completed_topics()
+
+# Initialize topic_bank excluding any previously completed topics
 if "topic_bank" not in st.session_state:
-    st.session_state.topic_bank = INITIAL_TOPIC_BANK.copy()
+    st.session_state.topic_bank = [
+        t for t in INITIAL_TOPIC_BANK if t not in completed_set
+    ]
 
 
 def pick_random_topic():
-    if len(st.session_state.topic_bank) < 10:
+    # Remove completed topics dynamically
+    st.session_state.topic_bank = [
+        t
+        for t in st.session_state.topic_bank
+        if t not in load_completed_topics()
+    ]
+
+    if len(st.session_state.topic_bank) < 5:
         replenish_topic_bank_with_ai()
 
     if not st.session_state.topic_bank:
-        st.session_state.topic_bank = INITIAL_TOPIC_BANK.copy()
+        st.session_state.topic_bank = [
+            t for t in INITIAL_TOPIC_BANK if t not in load_completed_topics()
+        ]
 
     current = st.session_state.get("topic")
     candidates = [t for t in st.session_state.topic_bank if t != current]
 
     if candidates:
         return random.choice(candidates)
-    return random.choice(st.session_state.topic_bank)
+    elif st.session_state.topic_bank:
+        return random.choice(st.session_state.topic_bank)
+    else:
+        return "Write about your favorite day of the week and why you enjoy it!"
 
 
-if "topic" not in st.session_state:
+if "topic" not in st.session_state or st.session_state.topic in completed_set:
     st.session_state.topic = pick_random_topic()
 
 
@@ -109,7 +160,7 @@ def switch_to_next_topic():
 # Student Name Input
 # ---------------------------------------------------------
 raw_name = st.text_input(
-    "👤 Enter your name:",
+    "👤 Enter your name / 请输入你的名字:",
     placeholder="e.g. Aiden or Ethan",
     help="Type your name so we can personalize your review!",
 )
@@ -269,8 +320,9 @@ if st.button("🚀 Submit & Grade"):
                 else:
                     st.caption(f"ℹ️ (Email notification status: {email_msg})")
 
-                # Remove the completed topic ONLY AFTER successful submission
+                # Save topic to persistent disk storage and remove from active bank
                 completed_topic = st.session_state.topic
+                save_completed_topic(completed_topic)
                 if completed_topic in st.session_state.topic_bank:
                     st.session_state.topic_bank.remove(completed_topic)
 
