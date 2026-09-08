@@ -110,7 +110,7 @@ def replenish_topic_bank_with_ai():
 
 
 # ---------------------------------------------------------
-# Initialize State for Topics
+# Initialize State for Topics & User Content
 # ---------------------------------------------------------
 completed_set = load_completed_topics()
 
@@ -120,9 +120,15 @@ if "topic_bank" not in st.session_state:
         t for t in INITIAL_TOPIC_BANK if t not in completed_set
     ]
 
+# Initialize user input buffer to prevent content loss on rerun
+if "writing_text" not in st.session_state:
+    st.session_state.writing_text = ""
+
+if "student_name_input" not in st.session_state:
+    st.session_state.student_name_input = ""
+
 
 def pick_random_topic():
-    # Remove completed topics dynamically
     st.session_state.topic_bank = [
         t
         for t in st.session_state.topic_bank
@@ -157,10 +163,11 @@ def switch_to_next_topic():
 
 
 # ---------------------------------------------------------
-# Student Name Input
+# Student Name Input (Bound to Session State)
 # ---------------------------------------------------------
 raw_name = st.text_input(
     "👤 Enter your name / 请输入你的名字:",
+    key="student_name_input",
     placeholder="e.g. Aiden or Ethan",
     help="Type your name so we can personalize your review!",
 )
@@ -224,10 +231,11 @@ Sent automatically by Daily English Writing Challenge App.
 
 
 # ---------------------------------------------------------
-# Input Text Area and Word Count Limit
+# Input Text Area (Bound to Session State to Prevent Deletion)
 # ---------------------------------------------------------
 user_input = st.text_area(
     f"✍️ Write your response below, {student_name}! (Aim for 100-200 words):",
+    key="writing_text",
     height=220,
     placeholder="Start typing your entry here... Challenge yourself to reach at least 100 words by adding details, reasons, and feelings!",
 )
