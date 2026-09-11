@@ -19,7 +19,7 @@ st.write("Welcome to your daily English writing space!")
 api_key = st.secrets.get("GEMINI_API_KEY", "")
 
 # ---------------------------------------------------------
-# Persistent Storage for Completed Topics (Prevents Duplicates)
+# Persistent Storage for Completed & Disliked Topics
 # ---------------------------------------------------------
 COMPLETED_FILE = "completed_topics.json"
 
@@ -158,12 +158,23 @@ if "topic" not in st.session_state or st.session_state.topic in completed_set:
     st.session_state.topic = pick_random_topic()
 
 
+# Keep topic in bank, just pick another
 def switch_to_next_topic():
     st.session_state.topic = pick_random_topic()
 
 
+# Permanently remove disliked topic and pick a new one
+def remove_disliked_topic():
+    disliked_topic = st.session_state.topic
+    # Save to persistent storage so it never comes back
+    save_completed_topic(disliked_topic)
+    if disliked_topic in st.session_state.topic_bank:
+        st.session_state.topic_bank.remove(disliked_topic)
+    st.session_state.topic = pick_random_topic()
+
+
 # ---------------------------------------------------------
-# Student Name Input (Bound to Session State)
+# Student Name Input
 # ---------------------------------------------------------
 raw_name = st.text_input(
     "👤 Enter your name / 请输入你的名字:",
@@ -177,7 +188,13 @@ student_name = raw_name.strip() if raw_name.strip() else "Student"
 st.markdown("---")
 
 st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
-st.button("🔄 New Topic", on_click=switch_to_next_topic)
+
+# Action buttons side-by-side
+col1, col2 = st.columns([1, 1])
+with col1:
+    st.button("🔄 New Topic (Keep for later)", on_click=switch_to_next_topic, use_container_width=True)
+with col2:
+    st.button("❌ Not Interested (Delete topic)", on_click=remove_disliked_topic, use_container_width=True)
 
 st.markdown("---")
 
@@ -256,7 +273,7 @@ else:
 # ---------------------------------------------------------
 # Submit & Grading Logic
 # ---------------------------------------------------------
-if st.button("🚀 Submit & Grade"):
+if st.button("🚀 Submit & Grade", use_container_width=True):
     if not raw_name.strip():
         st.warning(
             "⚠️ Please enter your name before submitting! / 请先输入你的名字后再提交！"
