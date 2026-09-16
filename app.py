@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import random
@@ -9,43 +10,54 @@ import streamlit as st
 
 # 1. Page Configuration
 st.set_page_config(
-    page_title="Grade 5 Daily Writing", page_icon="✍️", layout="centered"
+    page_title="Grade 5 Daily Writing & Portfolio",
+    page_icon="✍️",
+    layout="centered",
 )
-
-st.title("✍️ Daily English Writing Challenge")
-st.write("Welcome to your daily English writing space!")
 
 # Fetch Gemini API Key
 api_key = st.secrets.get("GEMINI_API_KEY", "")
 
 # ---------------------------------------------------------
-# Persistent Storage for Completed & Disliked Topics
+# Persistent Data Files
 # ---------------------------------------------------------
-COMPLETED_FILE = "completed_topics.json"
+HISTORY_FILE = "writing_history.json"
 
 
-def load_completed_topics():
-    if os.path.exists(COMPLETED_FILE):
+def load_history():
+    if os.path.exists(HISTORY_FILE):
         try:
-            with open(COMPLETED_FILE, "r", encoding="utf-8") as f:
-                return set(json.load(f))
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
         except Exception:
-            return set()
-    return set()
+            return []
+    return []
 
 
-def save_completed_topic(topic):
-    completed = load_completed_topics()
-    completed.add(topic)
+def save_submission(student_name, email, topic, user_input, ai_feedback):
+    history = load_history()
+    # Record timestamp in localized string format
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    entry = {
+        "student_name": student_name,
+        "email": email.strip().lower(),
+        "topic": topic,
+        "user_input": user_input,
+        "ai_feedback": ai_feedback,
+        "timestamp": timestamp,
+    }
+    history.append(entry)
+
     try:
-        with open(COMPLETED_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(completed), f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.error(f"Failed to save history record: {e}")
 
 
 # ---------------------------------------------------------
-# Initial Default Topic Bank (Fast Loading Base)
+# Initial Default Topic Bank
 # ---------------------------------------------------------
 INITIAL_TOPIC_BANK = [
     "If you could create one new rule for recess at your school, what would it be and why?",
@@ -63,13 +75,9 @@ INITIAL_TOPIC_BANK = [
     "Imagine you are building a time machine. Which period in history would you visit first?",
     "If you had $100 to spend on making your community a better place, how would you use it?",
     "Describe what your dream bedroom would look like if you had an unlimited budget.",
-    "If you could invent a new flavor of ice cream, what ingredients would you put in it?",
-    "What is your favorite book or story, and what makes it so exciting to read?",
-    "If animals could go to school just like humans, which animal do you think would be the smartest student?",
 ]
 
 
-# Function to background-expand the topic bank using Gemini AI
 def replenish_topic_bank_with_ai():
     if not api_key:
         return
@@ -92,15 +100,16 @@ def replenish_topic_bank_with_ai():
         response = model.generate_content(prompt)
         raw_lines = response.text.strip().split("\n")
 
-        completed = load_completed_topics()
+        history = load_history()
+        completed_topics = {item["topic"] for item in history}
+
         new_prompts = []
         for line in raw_lines:
             line = line.strip().lstrip("-*• ").strip()
-            # Filter out duplicate and completed topics
             if (
                 line
                 and line not in st.session_state.topic_bank
-                and line not in completed
+                and line not in completed_topics
             ):
                 new_prompts.append(line)
 
@@ -110,29 +119,26 @@ def replenish_topic_bank_with_ai():
 
 
 # ---------------------------------------------------------
-# Initialize State for Topics & User Content
+# Session State Initialization
 # ---------------------------------------------------------
-completed_set = load_completed_topics()
+history_records = load_history()
+completed_topics_set = {item["topic"] for item in history_records}
 
-# Initialize topic_bank excluding any previously completed topics
 if "topic_bank" not in st.session_state:
     st.session_state.topic_bank = [
-        t for t in INITIAL_TOPIC_BANK if t not in completed_set
+        t for t in INITIAL_TOPIC_BANK if t not in completed_topics_set
     ]
 
-# Initialize user input buffer to prevent content loss on rerun
 if "writing_text" not in st.session_state:
     st.session_state.writing_text = ""
 
-if "student_name_input" not in st.session_state:
-    st.session_state.student_name_input = ""
-
 
 def pick_random_topic():
+    current_history = load_history()
+    completed_set = {item["topic"] for item in current_history}
+
     st.session_state.topic_bank = [
-        t
-        for t in st.session_state.topic_bank
-        if t not in load_completed_topics()
+        t for t in st.session_state.topic_bank if t not in completed_set
     ]
 
     if len(st.session_state.topic_bank) < 5:
@@ -140,7 +146,7 @@ def pick_random_topic():
 
     if not st.session_state.topic_bank:
         st.session_state.topic_bank = [
-            t for t in INITIAL_TOPIC_BANK if t not in load_completed_topics()
+            t for t in INITIAL_TOPIC_BANK if t not in completed_set
         ]
 
     current = st.session_state.get("topic")
@@ -154,73 +160,116 @@ def pick_random_topic():
         return "Write about your favorite day of the week and why you enjoy it!"
 
 
-if "topic" not in st.session_state or st.session_state.topic in completed_set:
+if (
+    "topic" not in st.session_state
+    or st.session_state.topic in completed_topics_set
+):
     st.session_state.topic = pick_random_topic()
 
 
-# Keep topic in bank, just pick another
 def switch_to_next_topic():
     st.session_state.topic = pick_random_topic()
 
 
-# Permanently remove disliked topic and pick a new one
 def remove_disliked_topic():
     disliked_topic = st.session_state.topic
-    # Save to persistent storage so it never comes back
-    save_completed_topic(disliked_topic)
     if disliked_topic in st.session_state.topic_bank:
         st.session_state.topic_bank.remove(disliked_topic)
     st.session_state.topic = pick_random_topic()
 
 
 # ---------------------------------------------------------
-# Student Name Input
+# Sidebar Navigation
 # ---------------------------------------------------------
-raw_name = st.text_input(
-    "👤 Enter your name / 请输入你的名字:",
-    key="student_name_input",
-    placeholder="e.g. Aiden or Ethan",
-    help="Type your name so we can personalize your review!",
+st.sidebar.title("📖 Navigation")
+page = st.sidebar.radio(
+    "Go to:", ["✍️ Daily Practice", "📚 Writing History"], index=0
 )
 
-student_name = raw_name.strip() if raw_name.strip() else "Student"
-
-st.markdown("---")
-
-st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
-
-# Action buttons side-by-side
-col1, col2 = st.columns([1, 1])
-with col1:
-    st.button("🔄 New Topic (Keep for later)", on_click=switch_to_next_topic, use_container_width=True)
-with col2:
-    st.button("❌ Not Interested (Delete topic)", on_click=remove_disliked_topic, use_container_width=True)
-
-st.markdown("---")
-
-
 # ---------------------------------------------------------
-# Function to send email notification to parent
+# PAGE 1: Daily Practice
 # ---------------------------------------------------------
-def send_email_to_parent(name, topic, student_text, ai_feedback):
-    sender = st.secrets.get("EMAIL_SENDER", "")
-    password = st.secrets.get("EMAIL_PASSWORD", "")
-    receiver = st.secrets.get("EMAIL_RECEIVER", "")
+if page == "✍️ Daily Practice":
+    st.title("✍️ Daily English Writing Challenge")
+    st.write("Welcome to your daily English writing space!")
 
-    if not sender or not password or not receiver:
-        return False, "Email credentials not configured in Streamlit Secrets."
+    col_name, col_email = st.columns([1, 1])
+    with col_name:
+        raw_name = st.text_input(
+            "👤 Name / 姓名:",
+            key="student_name_input",
+            placeholder="e.g. Aiden",
+        )
+    with col_email:
+        raw_email = st.text_input(
+            "📧 Email / 邮箱:",
+            key="student_email_input",
+            placeholder="e.g. aiden@example.com",
+        )
 
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = f"Daily Writing App <{sender}>"
-        msg["To"] = receiver
-        msg["Subject"] = f"📝 Daily Writing Submission from {name}"
+    student_name = raw_name.strip() if raw_name.strip() else "Student"
+    student_email = raw_email.strip().lower()
 
-        body = f"""Hi,
+    st.markdown("---")
+    st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        st.button(
+            "🔄 New Topic (Keep for later)",
+            on_click=switch_to_next_topic,
+            use_container_width=True,
+        )
+    with col2:
+        st.button(
+            "❌ Not Interested (Skip topic)",
+            on_click=remove_disliked_topic,
+            use_container_width=True,
+        )
+
+    st.markdown("---")
+
+    user_input = st.text_area(
+        f"✍️ Write your response below, {student_name}! (Aim for 100-200 words):",
+        key="writing_text",
+        height=220,
+        placeholder="Start typing your entry here... Challenge yourself to reach at least 100 words!",
+    )
+
+    word_count = len(user_input.split()) if user_input.strip() else 0
+
+    if word_count > 200:
+        st.error(
+            f"⚠️ Word count: {word_count} words. Exceeded 200-word limit!"
+        )
+    elif word_count > 0 and word_count < 50:
+        st.warning(
+            f"💡 Current Word Count: **{word_count}** words. Good start! Can you add more details?"
+        )
+    else:
+        st.caption(f"📝 Word Count: **{word_count} / 200** words")
+
+    # Email function
+    def send_email_to_parent(name, topic, student_text, ai_feedback):
+        sender = st.secrets.get("EMAIL_SENDER", "")
+        password = st.secrets.get("EMAIL_PASSWORD", "")
+        receiver = st.secrets.get("EMAIL_RECEIVER", "")
+
+        if not sender or not password or not receiver:
+            return False, "Email credentials missing."
+
+        try:
+            msg = MIMEMultipart()
+            msg["From"] = f"Daily Writing App <{sender}>"
+            msg["To"] = receiver
+            msg["Subject"] = f"📝 Daily Writing Submission from {name}"
+
+            body = f"""Hi,
 
 {name} has just submitted a new writing practice!
 
 👤 Student: {name}
+📧 Email: {student_email}
 
 📌 Topic:
 {topic}
@@ -235,121 +284,153 @@ def send_email_to_parent(name, topic, student_text, ai_feedback):
 ---
 Sent automatically by Daily English Writing Challenge App.
 """
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(sender, password)
-        server.send_message(msg)
-        server.quit()
-        return True, "Email sent successfully!"
-    except Exception as e:
-        return False, str(e)
+            server = smtplib.SMTP("smtp.gmail.com", 587)
+            server.starttls()
+            server.login(sender, password)
+            server.send_message(msg)
+            server.quit()
+            return True, "Email sent successfully!"
+        except Exception as e:
+            return False, str(e)
 
+    # Submit Logic
+    if st.button("🚀 Submit & Grade", use_container_width=True):
+        if not raw_name.strip():
+            st.warning("⚠️ Please enter your name before submitting!")
+        elif not raw_email.strip():
+            st.warning(
+                "⚠️ Please enter your email address to record your portfolio!"
+            )
+        elif not user_input.strip():
+            st.warning("Please write something before submitting!")
+        elif word_count > 200:
+            st.warning("Please shorten your text to 200 words or less!")
+        elif not api_key:
+            st.error("API Key missing in Streamlit Secrets!")
+        else:
+            with st.spinner(
+                f"Your AI teacher is reviewing {student_name}'s writing..."
+            ):
+                try:
+                    genai.configure(api_key=api_key)
+                    model = genai.GenerativeModel("gemini-3.6-flash")
+
+                    prompt = f"""
+                    You are an encouraging, inspiring Grade 5 English teacher in Canada.
+                    Review this response by ESL student: {student_name}.
+
+                    Topic: "{st.session_state.topic}"
+                    Student Writing: "{user_input}"
+                    Word Count: {word_count} words.
+
+                    Provide feedback strictly in English formatted in Markdown:
+                    ### 📊 Score & Overall Impression
+                    * **Overall Score**: [X]/10
+                    * **Grammar & Spelling**: [X]/5
+                    * **Vocabulary & Word Choice**: [X]/5
+                    * **Content Expansion & Details**: [X]/5
+
+                    ### 🌟 What You Did Great
+                    - Point 1
+                    - Point 2
+
+                    ### ✏️ Corrections & Improvements
+                    - **Original**: "[Original sentence]"
+                    - **Correction**: "[Corrected sentence]"
+                    - **Why**: [Brief explanation]
+
+                    ### 💡 How to Expand Your Writing (Break 100 Words!)
+                    Give 3 concrete ways to add more content.
+
+                    ### 🚀 Model Expansion (Example Version: 100-120 Words)
+                    Rewrite ideas into a model 100-120 word paragraph.
+                    """
+
+                    response = model.generate_content(prompt)
+                    ai_feedback = response.text
+
+                    st.success(f"🎉 Great job, {student_name}! Review Completed!")
+                    st.markdown(ai_feedback)
+
+                    # Save to local persistent history JSON
+                    save_submission(
+                        student_name,
+                        student_email,
+                        st.session_state.topic,
+                        user_input,
+                        ai_feedback,
+                    )
+
+                    # Email notification
+                    send_email_to_parent(
+                        student_name,
+                        st.session_state.topic,
+                        user_input,
+                        ai_feedback,
+                    )
+                    st.toast("📧 Notification sent to parent & saved to history!")
+
+                    # Pick a new topic for next session
+                    st.session_state.topic = pick_random_topic()
+
+                except Exception as e:
+                    st.error(f"An error occurred during review: {e}")
 
 # ---------------------------------------------------------
-# Input Text Area (Bound to Session State to Prevent Deletion)
+# PAGE 2: Writing History (Portfolio)
 # ---------------------------------------------------------
-user_input = st.text_area(
-    f"✍️ Write your response below, {student_name}! (Aim for 100-200 words):",
-    key="writing_text",
-    height=220,
-    placeholder="Start typing your entry here... Challenge yourself to reach at least 100 words by adding details, reasons, and feelings!",
-)
+elif page == "📚 Writing History":
+    st.title("📚 Student Writing Portfolio & History")
+    st.write("Enter your email address to view all your past writing entries and AI feedback!")
 
-word_count = len(user_input.split()) if user_input.strip() else 0
+    search_email = st.text_input(
+        "📧 Enter your email to search / 输入邮箱查询历史记录:",
+        placeholder="e.g. aiden@example.com",
+    ).strip().lower()
 
-if word_count > 200:
-    st.error(
-        f"⚠️ Word count: {word_count} words. You have exceeded the 200-word limit! Please shorten your text."
-    )
-elif word_count > 0 and word_count < 50:
-    st.warning(
-        f"💡 Current Word Count: **{word_count}** words. Good start! Can you add more details or examples to break 100 words?"
-    )
-else:
-    st.caption(f"📝 Word Count: **{word_count} / 200** words")
+    if search_email:
+        all_history = load_history()
+        # Filter entries by email
+        user_records = [
+            rec for rec in all_history if rec.get("email") == search_email
+        ]
 
-# ---------------------------------------------------------
-# Submit & Grading Logic
-# ---------------------------------------------------------
-if st.button("🚀 Submit & Grade", use_container_width=True):
-    if not raw_name.strip():
-        st.warning(
-            "⚠️ Please enter your name before submitting! / 请先输入你的名字后再提交！"
-        )
-    elif not user_input.strip():
-        st.warning("Please write something before submitting!")
-    elif word_count > 200:
-        st.warning("Please shorten your text to 200 words or less!")
-    elif not api_key:
-        st.error(
-            "API Key is missing. Please configure GEMINI_API_KEY in your Streamlit Secrets!"
-        )
-    else:
-        with st.spinner(f"Your AI teacher is reading {student_name}'s writing..."):
-            try:
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel("gemini-3.6-flash")
+        if not user_records:
+            st.info(f"No writing entries found for `{search_email}` yet. Go complete a daily challenge!")
+        else:
+            # Sort newest first
+            user_records.reverse()
+            st.success(f"Found {len(user_records)} writing entries for `{search_email}`!")
 
-                prompt = f"""
-                You are an encouraging, inspiring, and friendly Grade 5 English teacher in Canada.
-                Review the following writing response submitted by an ESL Grade 5 student named {student_name}.
+            st.markdown("---")
+            st.subheader("📋 Select an Entry to View Details:")
 
-                Topic Prompt: "{st.session_state.topic}"
-                Student Writing: "{user_input}"
-                Current Word Count: {word_count} words.
+            # Create labels for drop down option
+            options = [
+                f"[{rec['timestamp']}] {rec['topic'][:50]}..."
+                for rec in user_records
+            ]
 
-                Your main goal is to guide the student to EXPAND their writing to at least 100+ words using richer vocabulary, varied sentence structures, and vivid details.
+            selected_option = st.selectbox(
+                "Choose a submission date / 选择提交记录:",
+                options=options,
+            )
 
-                Please provide feedback strictly in English, formatted in Markdown as follows:
+            # Find matching record
+            selected_index = options.index(selected_option)
+            selected_record = user_records[selected_index]
 
-                ### 📊 Score & Overall Impression
-                * **Overall Score**: [X]/10
-                * **Grammar & Spelling**: [X]/5
-                * **Vocabulary & Word Choice**: [X]/5
-                * **Content Expansion & Details**: [X]/5
+            st.markdown("---")
+            # Detail View Card
+            st.markdown(f"### 📌 Topic: {selected_record['topic']}")
+            st.caption(
+                f"👤 **Student**: {selected_record['student_name']} | 📅 **Submitted At**: {selected_record['timestamp']}"
+            )
 
-                ### 🌟 What You Did Great
-                - Point 1 (Highlight a good sentence, creative idea, or vocabulary choice)
-                - Point 2 (Highlight effort or clear thought)
+            with st.expander("✍️ View Original Student Writing", expanded=True):
+                st.write(selected_record["user_input"])
 
-                ### ✏️ Corrections & Improvements
-                List any grammar, spelling, or punctuation mistakes clearly:
-                - **Original**: "[Original sentence with error]"
-                - **Correction**: "[Corrected sentence]"
-                - **Why**: [Brief, simple explanation suitable for Grade 5]
-
-                ### 💡 How to Expand Your Writing (Break 100 Words!)
-                Give {student_name} 3 concrete ways to add more content and reach 100+ words:
-                1. **Add Sensory Details**: [Suggest specific sight, sound, or feeling details they could add]
-                2. **Explain the 'Why' & Reasons**: [Suggest a question they can answer to explain their thoughts further]
-                3. **Vocabulary & Sentence Upgrade**: Show how to turn one simple sentence from their text into a compound/complex sentence with higher-level adjectives/verbs.
-
-                ### 🚀 Model Expansion (Example Version: 100-120 Words)
-                Rewrite {student_name}'s original ideas into an expanded, high-level Grade 5 paragraph (~100-120 words). Keep their core story/idea, but enrich it with advanced vocabulary, transition words (e.g., Furthermore, Suddenly, As a result), and vivid details so they can learn by example.
-                """
-
-                response = model.generate_content(prompt)
-                ai_feedback = response.text
-
-                st.success(f"🎉 Great job, {student_name}! Review Completed!")
-                st.markdown(ai_feedback)
-
-                # Send email notification quietly
-                email_success, email_msg = send_email_to_parent(
-                    student_name, st.session_state.topic, user_input, ai_feedback
-                )
-                if email_success:
-                    st.toast(f"📧 Sent {student_name}'s writing to parent's email!")
-                else:
-                    st.caption(f"ℹ️ (Email notification status: {email_msg})")
-
-                # Save topic to persistent disk storage and remove from active bank
-                completed_topic = st.session_state.topic
-                save_completed_topic(completed_topic)
-                if completed_topic in st.session_state.topic_bank:
-                    st.session_state.topic_bank.remove(completed_topic)
-
-            except Exception as e:
-                st.error(f"An error occurred during review: {e}")
+            with st.expander("🤖 View AI Teacher Evaluation & Review", expanded=True):
+                st.markdown(selected_record["ai_feedback"])
