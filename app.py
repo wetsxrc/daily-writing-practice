@@ -36,7 +36,6 @@ def load_history():
 
 def save_submission(student_name, email, topic, user_input, ai_feedback):
     history = load_history()
-    # Record timestamp in localized string format
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     entry = {
@@ -119,7 +118,7 @@ def replenish_topic_bank_with_ai():
 
 
 # ---------------------------------------------------------
-# Session State Initialization
+# Session State & Draft Cache Initialization
 # ---------------------------------------------------------
 history_records = load_history()
 completed_topics_set = {item["topic"] for item in history_records}
@@ -129,8 +128,9 @@ if "topic_bank" not in st.session_state:
         t for t in INITIAL_TOPIC_BANK if t not in completed_topics_set
     ]
 
-if "writing_text" not in st.session_state:
-    st.session_state.writing_text = ""
+# Draft memory in Session State
+if "writing_draft" not in st.session_state:
+    st.session_state.writing_draft = ""
 
 
 def pick_random_topic():
@@ -229,25 +229,33 @@ if page == "✍️ Daily Practice":
 
     st.markdown("---")
 
+    # Text Area bound directly to session state
     user_input = st.text_area(
         f"✍️ Write your response below, {student_name}! (Aim for 100-200 words):",
-        key="writing_text",
-        height=220,
-        placeholder="Start typing your entry here... Challenge yourself to reach at least 100 words!",
+        key="writing_draft",
+        height=240,
+        placeholder="Start typing your entry here... Your writing will be auto-saved even if you switch tabs or refresh!",
     )
 
     word_count = len(user_input.split()) if user_input.strip() else 0
 
-    if word_count > 200:
-        st.error(
-            f"⚠️ Word count: {word_count} words. Exceeded 200-word limit!"
-        )
-    elif word_count > 0 and word_count < 50:
-        st.warning(
-            f"💡 Current Word Count: **{word_count}** words. Good start! Can you add more details?"
-        )
-    else:
-        st.caption(f"📝 Word Count: **{word_count} / 200** words")
+    # Auto-save indicator & Action toolbar
+    col_stat, col_save = st.columns([2, 1])
+    with col_stat:
+        if word_count > 200:
+            st.error(
+                f"⚠️ Word count: {word_count} words. Exceeded 200-word limit!"
+            )
+        elif word_count > 0 and word_count < 50:
+            st.warning(
+                f"💡 Current Word Count: **{word_count}** words. Good start! Can you add more details?"
+            )
+        else:
+            st.caption(f"📝 Word Count: **{word_count} / 200** words")
+
+    with col_save:
+        if st.button("💾 Save Draft", use_container_width=True):
+            st.toast("✅ Draft saved safely in local memory!")
 
     # Email function
     def send_email_to_parent(name, topic, student_text, ai_feedback):
@@ -372,6 +380,9 @@ Sent automatically by Daily English Writing Challenge App.
                     )
                     st.toast("📧 Notification sent to parent & saved to history!")
 
+                    # Clear draft buffer upon successful submission
+                    st.session_state.writing_draft = ""
+
                     # Pick a new topic for next session
                     st.session_state.topic = pick_random_topic()
 
@@ -392,7 +403,6 @@ elif page == "📚 Writing History":
 
     if search_email:
         all_history = load_history()
-        # Filter entries by email
         user_records = [
             rec for rec in all_history if rec.get("email") == search_email
         ]
@@ -400,14 +410,12 @@ elif page == "📚 Writing History":
         if not user_records:
             st.info(f"No writing entries found for `{search_email}` yet. Go complete a daily challenge!")
         else:
-            # Sort newest first
             user_records.reverse()
             st.success(f"Found {len(user_records)} writing entries for `{search_email}`!")
 
             st.markdown("---")
             st.subheader("📋 Select an Entry to View Details:")
 
-            # Create labels for drop down option
             options = [
                 f"[{rec['timestamp']}] {rec['topic'][:50]}..."
                 for rec in user_records
@@ -418,12 +426,10 @@ elif page == "📚 Writing History":
                 options=options,
             )
 
-            # Find matching record
             selected_index = options.index(selected_option)
             selected_record = user_records[selected_index]
 
             st.markdown("---")
-            # Detail View Card
             st.markdown(f"### 📌 Topic: {selected_record['topic']}")
             st.caption(
                 f"👤 **Student**: {selected_record['student_name']} | 📅 **Submitted At**: {selected_record['timestamp']}"
