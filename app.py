@@ -128,9 +128,11 @@ if "topic_bank" not in st.session_state:
         t for t in INITIAL_TOPIC_BANK if t not in completed_topics_set
     ]
 
-# Draft memory in Session State
 if "writing_draft" not in st.session_state:
     st.session_state.writing_draft = ""
+
+if "is_submitting" not in st.session_state:
+    st.session_state.is_submitting = False
 
 
 def pick_random_topic():
@@ -179,11 +181,14 @@ def remove_disliked_topic():
 
 
 # ---------------------------------------------------------
-# Sidebar Navigation
+# Sidebar Navigation (Locked when submitting)
 # ---------------------------------------------------------
 st.sidebar.title("📖 Navigation")
 page = st.sidebar.radio(
-    "Go to:", ["✍️ Daily Practice", "📚 Writing History"], index=0
+    "Go to:",
+    ["✍️ Daily Practice", "📚 Writing History"],
+    index=0,
+    disabled=st.session_state.is_submitting,  # 全局锁定侧边栏，防止孩子切页面中断
 )
 
 # ---------------------------------------------------------
@@ -199,12 +204,14 @@ if page == "✍️ Daily Practice":
             "👤 Name / 姓名:",
             key="student_name_input",
             placeholder="e.g. Aiden",
+            disabled=st.session_state.is_submitting,
         )
     with col_email:
         raw_email = st.text_input(
             "📧 Email / 邮箱:",
             key="student_email_input",
             placeholder="e.g. aiden@example.com",
+            disabled=st.session_state.is_submitting,
         )
 
     student_name = raw_name.strip() if raw_name.strip() else "Student"
@@ -219,12 +226,14 @@ if page == "✍️ Daily Practice":
             "🔄 New Topic (Keep for later)",
             on_click=switch_to_next_topic,
             use_container_width=True,
+            disabled=st.session_state.is_submitting,
         )
     with col2:
         st.button(
             "❌ Not Interested (Skip topic)",
             on_click=remove_disliked_topic,
             use_container_width=True,
+            disabled=st.session_state.is_submitting,
         )
 
     st.markdown("---")
@@ -234,12 +243,12 @@ if page == "✍️ Daily Practice":
         f"✍️ Write your response below, {student_name}! (Aim for 100-200 words):",
         key="writing_draft",
         height=240,
-        placeholder="Start typing your entry here... Your writing will be auto-saved even if you switch tabs or refresh!",
+        placeholder="Start typing your entry here... Your writing is auto-saved!",
+        disabled=st.session_state.is_submitting,
     )
 
     word_count = len(user_input.split()) if user_input.strip() else 0
 
-    # Auto-save indicator & Action toolbar
     col_stat, col_save = st.columns([2, 1])
     with col_stat:
         if word_count > 200:
@@ -254,7 +263,11 @@ if page == "✍️ Daily Practice":
             st.caption(f"📝 Word Count: **{word_count} / 200** words")
 
     with col_save:
-        if st.button("💾 Save Draft", use_container_width=True):
+        if st.button(
+            "💾 Save Draft",
+            use_container_width=True,
+            disabled=st.session_state.is_submitting,
+        ):
             st.toast("✅ Draft saved safely in local memory!")
 
     # Email function
@@ -303,8 +316,16 @@ Sent automatically by Daily English Writing Challenge App.
         except Exception as e:
             return False, str(e)
 
-    # Submit Logic
-    if st.button("🚀 Submit & Grade", use_container_width=True):
+    # Submit Button
+    submit_pressed = st.button(
+        "🚀 Submit & Grade"
+        if not st.session_state.is_submitting
+        else "⏳ Reviewing in progress... Please wait!",
+        use_container_width=True,
+        disabled=st.session_state.is_submitting,
+    )
+
+    if submit_pressed:
         if not raw_name.strip():
             st.warning("⚠️ Please enter your name before submitting!")
         elif not raw_email.strip():
@@ -318,76 +339,92 @@ Sent automatically by Daily English Writing Challenge App.
         elif not api_key:
             st.error("API Key missing in Streamlit Secrets!")
         else:
-            with st.spinner(
-                f"Your AI teacher is reviewing {student_name}'s writing..."
-            ):
-                try:
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel("gemini-3.6-flash")
+            # Lock UI buttons & sidebar during submission
+            st.session_state.is_submitting = True
+            st.rerun()  # 立即触发一次重新渲染，让侧边栏和所有按钮瞬间变成禁用状态
 
-                    prompt = f"""
-                    You are an encouraging, inspiring Grade 5 English teacher in Canada.
-                    Review this response by ESL student: {student_name}.
+    # 如果处于提交状态，执行批改逻辑
+    if st.session_state.is_submitting:
+        with st.spinner(
+            f"🎨 AI Teacher is reviewing {student_name}'s writing... Please do not switch pages!"
+        ):
+            try:
+                genai.configure(api_key=api_key)
+                model = genai.GenerativeModel("gemini-3.6-flash")
 
-                    Topic: "{st.session_state.topic}"
-                    Student Writing: "{user_input}"
-                    Word Count: {word_count} words.
+                prompt = f"""
+                You are an encouraging, inspiring Grade 5 English teacher in Canada.
+                Review this response by ESL student: {student_name}.
 
-                    Provide feedback strictly in English formatted in Markdown:
-                    ### 📊 Score & Overall Impression
-                    * **Overall Score**: [X]/10
-                    * **Grammar & Spelling**: [X]/5
-                    * **Vocabulary & Word Choice**: [X]/5
-                    * **Content Expansion & Details**: [X]/5
+                Topic: "{st.session_state.topic}"
+                Student Writing: "{user_input}"
+                Word Count: {word_count} words.
 
-                    ### 🌟 What You Did Great
-                    - Point 1
-                    - Point 2
+                Provide feedback strictly in English formatted in Markdown:
+                ### 📊 Score & Overall Impression
+                * **Overall Score**: [X]/10
+                * **Grammar & Spelling**: [X]/5
+                * **Vocabulary & Word Choice**: [X]/5
+                * **Content Expansion & Details**: [X]/5
 
-                    ### ✏️ Corrections & Improvements
-                    - **Original**: "[Original sentence]"
-                    - **Correction**: "[Corrected sentence]"
-                    - **Why**: [Brief explanation]
+                ### 🌟 What You Did Great
+                - Point 1
+                - Point 2
 
-                    ### 💡 How to Expand Your Writing (Break 100 Words!)
-                    Give 3 concrete ways to add more content.
+                ### ✏️ Corrections & Improvements
+                - **Original**: "[Original sentence]"
+                - **Correction**: "[Corrected sentence]"
+                - **Why**: [Brief explanation]
 
-                    ### 🚀 Model Expansion (Example Version: 100-120 Words)
-                    Rewrite ideas into a model 100-120 word paragraph.
-                    """
+                ### 💡 How to Expand Your Writing (Break 100 Words!)
+                Give 3 concrete ways to add more content.
 
-                    response = model.generate_content(prompt)
-                    ai_feedback = response.text
+                ### 🚀 Model Expansion (Example Version: 100-120 Words)
+                Rewrite ideas into a model 100-120 word paragraph.
+                """
 
-                    st.success(f"🎉 Great job, {student_name}! Review Completed!")
-                    st.markdown(ai_feedback)
+                # Fast streaming output for instant response
+                response_stream = model.generate_content(
+                    prompt, stream=True
+                )
 
-                    # Save to local persistent history JSON
-                    save_submission(
-                        student_name,
-                        student_email,
-                        st.session_state.topic,
-                        user_input,
-                        ai_feedback,
-                    )
+                st.markdown("### 📝 AI Teacher's Evaluation:")
+                feedback_placeholder = st.empty()
+                full_feedback = ""
 
-                    # Email notification
-                    send_email_to_parent(
-                        student_name,
-                        st.session_state.topic,
-                        user_input,
-                        ai_feedback,
-                    )
-                    st.toast("📧 Notification sent to parent & saved to history!")
+                for chunk in response_stream:
+                    full_feedback += chunk.text
+                    feedback_placeholder.markdown(full_feedback + "▌")
 
-                    # Clear draft buffer upon successful submission
-                    st.session_state.writing_draft = ""
+                feedback_placeholder.markdown(full_feedback)
 
-                    # Pick a new topic for next session
-                    st.session_state.topic = pick_random_topic()
+                st.success(f"🎉 Great job, {student_name}! Review Completed!")
 
-                except Exception as e:
-                    st.error(f"An error occurred during review: {e}")
+                # Save to history & send email
+                save_submission(
+                    student_name,
+                    student_email,
+                    st.session_state.topic,
+                    user_input,
+                    full_feedback,
+                )
+                send_email_to_parent(
+                    student_name,
+                    st.session_state.topic,
+                    user_input,
+                    full_feedback,
+                )
+                st.toast("📧 Saved to portfolio & notification sent!")
+
+                # Reset states & clear draft
+                st.session_state.writing_draft = ""
+                st.session_state.topic = pick_random_topic()
+
+            except Exception as e:
+                st.error(f"An error occurred during review: {e}")
+            finally:
+                # Unlock UI buttons & sidebar
+                st.session_state.is_submitting = False
 
 # ---------------------------------------------------------
 # PAGE 2: Writing History (Portfolio)
