@@ -78,43 +78,8 @@ INITIAL_TOPIC_BANK = [
 
 
 def replenish_topic_bank_with_ai():
-    if not api_key:
-        return
-
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-3.6-flash")
-
-        prompt = """
-        Generate 15 creative, fun, and age-appropriate writing prompts for Grade 5 ESL students in Canada.
-        Requirements:
-        - Diverse topics (imagination, school life, hobbies, animals, adventures, nature).
-        - Easy to understand for 10-11 year olds.
-        - Output ONLY a bulleted list of prompts, one per line, without any extra text or header.
-        - Format each prompt starting with a dash, like this:
-        - Prompt 1
-        - Prompt 2
-        """
-
-        response = model.generate_content(prompt)
-        raw_lines = response.text.strip().split("\n")
-
-        history = load_history()
-        completed_topics = {item["topic"] for item in history}
-
-        new_prompts = []
-        for line in raw_lines:
-            line = line.strip().lstrip("-*• ").strip()
-            if (
-                line
-                and line not in st.session_state.topic_bank
-                and line not in completed_topics
-            ):
-                new_prompts.append(line)
-
-        st.session_state.topic_bank.extend(new_prompts)
-    except Exception:
-        pass
+    # 停用后台 API 自动补题，完全节省配额给孩子批改作文
+    return
 
 
 # ---------------------------------------------------------
@@ -142,9 +107,6 @@ def pick_random_topic():
     st.session_state.topic_bank = [
         t for t in st.session_state.topic_bank if t not in completed_set
     ]
-
-    if len(st.session_state.topic_bank) < 5:
-        replenish_topic_bank_with_ai()
 
     if not st.session_state.topic_bank:
         st.session_state.topic_bank = [
@@ -181,14 +143,14 @@ def remove_disliked_topic():
 
 
 # ---------------------------------------------------------
-# Sidebar Navigation (Locked when submitting)
+# Sidebar Navigation (Locked during submission)
 # ---------------------------------------------------------
 st.sidebar.title("📖 Navigation")
 page = st.sidebar.radio(
     "Go to:",
     ["✍️ Daily Practice", "📚 Writing History"],
     index=0,
-    disabled=st.session_state.is_submitting,  # 全局锁定侧边栏，防止孩子切页面中断
+    disabled=st.session_state.is_submitting,
 )
 
 # ---------------------------------------------------------
@@ -238,7 +200,6 @@ if page == "✍️ Daily Practice":
 
     st.markdown("---")
 
-    # Text Area bound directly to session state
     user_input = st.text_area(
         f"✍️ Write your response below, {student_name}! (Aim for 100-200 words):",
         key="writing_draft",
@@ -270,7 +231,6 @@ if page == "✍️ Daily Practice":
         ):
             st.toast("✅ Draft saved safely in local memory!")
 
-    # Email function
     def send_email_to_parent(name, topic, student_text, ai_feedback):
         sender = st.secrets.get("EMAIL_SENDER", "")
         password = st.secrets.get("EMAIL_PASSWORD", "")
@@ -339,18 +299,18 @@ Sent automatically by Daily English Writing Challenge App.
         elif not api_key:
             st.error("API Key missing in Streamlit Secrets!")
         else:
-            # Lock UI buttons & sidebar during submission
             st.session_state.is_submitting = True
-            st.rerun()  # 立即触发一次重新渲染，让侧边栏和所有按钮瞬间变成禁用状态
+            st.rerun()
 
-    # 如果处于提交状态，执行批改逻辑
+    # 批改逻辑（加入 try...finally 确保 100% 自动解锁）
     if st.session_state.is_submitting:
-        with st.spinner(
-            f"🎨 AI Teacher is reviewing {student_name}'s writing... Please do not switch pages!"
-        ):
-            try:
+        try:
+            with st.spinner(
+                f"🎨 AI Teacher is reviewing {student_name}'s writing..."
+            ):
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel("gemini-3.6-flash")
+                # 使用官方标准免费层模型 gemini-1.5-flash，额度更高更稳定
+                model = genai.GenerativeModel("gemini-1.5-flash")
 
                 prompt = f"""
                 You are an encouraging, inspiring Grade 5 English teacher in Canada.
@@ -383,7 +343,6 @@ Sent automatically by Daily English Writing Challenge App.
                 Rewrite ideas into a model 100-120 word paragraph.
                 """
 
-                # Fast streaming output for instant response
                 response_stream = model.generate_content(
                     prompt, stream=True
                 )
@@ -397,10 +356,8 @@ Sent automatically by Daily English Writing Challenge App.
                     feedback_placeholder.markdown(full_feedback + "▌")
 
                 feedback_placeholder.markdown(full_feedback)
-
                 st.success(f"🎉 Great job, {student_name}! Review Completed!")
 
-                # Save to history & send email
                 save_submission(
                     student_name,
                     student_email,
@@ -416,15 +373,19 @@ Sent automatically by Daily English Writing Challenge App.
                 )
                 st.toast("📧 Saved to portfolio & notification sent!")
 
-                # Reset states & clear draft
+                # 只有提交成功后才清空草稿
                 st.session_state.writing_draft = ""
                 st.session_state.topic = pick_random_topic()
 
-            except Exception as e:
+        except Exception as e:
+            if "429" in str(e):
+                st.error("⚠️ AI 老师今日批改配额已达上限（Quota Exceeded），请稍后再试或联系家长开启付费配额。孩子写的文章已为您保存在输入框中，不会丢失！")
+            else:
                 st.error(f"An error occurred during review: {e}")
-            finally:
-                # Unlock UI buttons & sidebar
-                st.session_state.is_submitting = False
+        finally:
+            # 关键：无论成功还是报错，必定解开锁定并刷新页面
+            st.session_state.is_submitting = False
+            st.rerun()
 
 # ---------------------------------------------------------
 # PAGE 2: Writing History (Portfolio)
