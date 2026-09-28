@@ -1,387 +1,399 @@
-import datetime
+import datetime as dt
+import hashlib
 import json
 import os
-import random
 import smtplib
-from email.mime.multipart import MIMEMultipart
+import time
+from email.header import Header
 from email.mime.text import MIMEText
-import google.generativeai as genai
+from zoneinfo import ZoneInfo
+
+import pandas as pd
 import streamlit as st
+from google import genai
+from google.genai import types
 
-# 1. Page Configuration
-st.set_page_config(
-    page_title="Grade 5 Daily Writing & Portfolio",
-    page_icon="✍️",
-    layout="centered",
-)
+from topics import TOPICS
 
-# Fetch Gemini API Key
-api_key = st.secrets.get("GEMINI_API_KEY", "")
+st.set_page_config(page_title="Daily Letter", page_icon="✍️", layout="centered")
 
-# ---------------------------------------------------------
-# Persistent Data Files
-# ---------------------------------------------------------
-HISTORY_FILE = "writing_history.json"
+# ---------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------
+TZ = ZoneInfo("America/Toronto")
+START_DATE = dt.date(2026, 10, 1)  # 不要修改！改了就等于从第一题重新开始
+MAX_WORDS = 200
+MAX_SWAPS = 3  # how many times a child may ask for a different topic per day
+MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]  # tried in order
+LOCAL_FILE = "writing_history.json"  # fallback only (lost on redeploy!)
+HEADERS = [
+    "timestamp", "email", "name", "date", "topic_idx", "topic", "essay",
+    "word_count", "score", "grammar", "vocabulary", "ideas", "clarity",
+    "feedback_json",
+]
+CAT_LABEL = {
+    "school": "📚 Learning",
+    "life": "🏡 Daily life",
+    "hobby": "🎨 Hobbies",
+    "think": "💭 Big ideas",
+}
+
+# ---------------------------------------------------------------
+# Optional family passcode (set APP_PASSCODE in secrets to turn on)
+# ---------------------------------------------------------------
+passcode = st.secrets.get("APP_PASSCODE", "")
+if passcode and not st.session_state.get("unlocked"):
+    entered = st.text_input("Family passcode", type="password")
+    if entered == passcode:
+        st.session_state["unlocked"] = True
+        st.rerun()
+    if entered:
+        st.error("Wrong passcode.")
+    st.stop()
 
 
-def load_history():
-    if os.path.exists(HISTORY_FILE):
+# ---------------------------------------------------------------
+# Storage: Google Sheets if configured, otherwise a local JSON file
+# ---------------------------------------------------------------
+@st.cache_resource
+def get_sheet():
+    if "gcp_service_account" not in st.secrets or "SHEET_ID" not in st.secrets:
+        return None
+    import gspread
+
+    gc = gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
+    ws = gc.open_by_key(st.secrets["SHEET_ID"]).sheet1
+    if not ws.row_values(1):
+        ws.append_row(HEADERS)
+    return ws
+
+
+def _read_local():
+    if os.path.exists(LOCAL_FILE):
         try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            with open(LOCAL_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return []
     return []
 
 
-def save_submission(student_name, email, topic, user_input, ai_feedback):
-    history = load_history()
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    entry = {
-        "student_name": student_name,
-        "email": email.strip().lower(),
-        "topic": topic,
-        "user_input": user_input,
-        "ai_feedback": ai_feedback,
-        "timestamp": timestamp,
-    }
-    history.append(entry)
-
+def save_entry(row):
+    """Returns (ok, where_or_error)."""
     try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
+        ws = get_sheet()
+        if ws is not None:
+            ws.append_row([row.get(h, "") for h in HEADERS], value_input_option="RAW")
+            return True, "sheet"
+        data = _read_local()
+        data.append(row)
+        with open(LOCAL_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True, "local"
     except Exception as e:
-        st.error(f"Failed to save history record: {e}")
+        return False, str(e)
 
 
-# ---------------------------------------------------------
-# Initial Default Topic Bank
-# ---------------------------------------------------------
-INITIAL_TOPIC_BANK = [
-    "Imagine you are building a time machine. Which period in history would you visit first?",
-    "If you could create one new rule for recess at your school, what would it be and why?",
-    "Describe your favorite afternoon snack using as many sensory words (sight, smell, taste) as possible.",
-    "If your pet or a favorite animal could talk for 10 minutes, what questions would you ask it?",
-    "What was the most interesting thing that happened in your class or school this week?",
-    "Imagine you found a mysterious small key in your room. What hidden box or room does it open?",
-    "What is your favorite outdoor activity to play with friends, and how do you play it?",
-    "If you could travel anywhere in Canada tomorrow, where would you go and what would you do there?",
-    "If you could design a new video game or board game, what would the goal of the game be?",
-    "If you woke up tomorrow with the ability to turn invisible, what is the first thing you would do?",
-    "Write about a time you tried something new. How did you feel before and after?",
-    "If you could trade places with any character in a book or movie for one day, who would it be?",
-    "What is the best piece of advice a family member or teacher has ever given you?",
-    "If you had $100 to spend on making your community a better place, how would you use it?",
-    "Describe what your dream bedroom would look like if you had an unlimited budget.",
-]
-
-# ---------------------------------------------------------
-# Session State Initialization
-# ---------------------------------------------------------
-history_records = load_history()
-completed_topics_set = {item["topic"] for item in history_records}
-
-if "topic_bank" not in st.session_state:
-    st.session_state.topic_bank = [
-        t for t in INITIAL_TOPIC_BANK if t not in completed_topics_set
-    ]
+def load_entries(email):
+    try:
+        ws = get_sheet()
+        rows = ws.get_all_records() if ws is not None else _read_local()
+    except Exception as e:
+        st.warning(f"Couldn't load your past letters: {e}")
+        return []
+    mine = [r for r in rows if str(r.get("email", "")).strip().lower() == email]
+    return sorted(mine, key=lambda r: str(r.get("timestamp", "")))
 
 
-def pick_random_topic():
-    current_history = load_history()
-    completed_set = {item["topic"] for item in current_history}
-
-    st.session_state.topic_bank = [
-        t for t in st.session_state.topic_bank if t not in completed_set
-    ]
-
-    if not st.session_state.topic_bank:
-        st.session_state.topic_bank = [
-            t for t in INITIAL_TOPIC_BANK if t not in completed_set
-        ]
-
-    current = st.session_state.get("topic")
-    candidates = [t for t in st.session_state.topic_bank if t != current]
-
-    if candidates:
-        return random.choice(candidates)
-    elif st.session_state.topic_bank:
-        return random.choice(st.session_state.topic_bank)
-    else:
-        return "Imagine you are building a time machine. Which period in history would you visit first?"
+# ---------------------------------------------------------------
+# Daily topic: depends only on the calendar date + the person's email,
+# so redeploying / restarting never resets it.
+# ---------------------------------------------------------------
+def today_local():
+    return dt.datetime.now(TZ).date()
 
 
-if (
-    "topic" not in st.session_state
-    or st.session_state.topic in completed_topics_set
-):
-    st.session_state.topic = pick_random_topic()
+def topic_index(email, day, shift=0):
+    offset = int(hashlib.sha256(email.encode("utf-8")).hexdigest(), 16) % len(TOPICS)
+    return ((day - START_DATE).days + offset + shift * 37) % len(TOPICS)
 
 
-def switch_to_next_topic():
-    st.session_state.topic = pick_random_topic()
+# ---------------------------------------------------------------
+# AI grading (returns structured JSON, score is computed by us)
+# ---------------------------------------------------------------
+SYSTEM = """You are a warm, encouraging English writing teacher for a Grade 5 student in Canada. The student is an English learner (ESL) who arrived two years ago, so judge the writing at that level, not against a native speaker.
+
+Return ONE JSON object with exactly these keys:
+{
+  "rubric": {"grammar": <int 0-25>, "vocabulary": <int 0-25>, "ideas": <int 0-25>, "clarity": <int 0-25>},
+  "grade_label": "<2-4 warm words, e.g. Nice work!>",
+  "strengths": ["<2-3 short, specific things done well>"],
+  "corrections": [{"original": "<exact words from the student>", "suggestion": "<corrected words>", "why": "<one short, gentle reason>"}],
+  "tip": "<ONE concrete thing to try in tomorrow's writing>",
+  "encouragement": "<one warm sentence to the student>",
+  "parent_note_zh": "<2 short sentences in Chinese for the parent: the main strength and the main thing to practice>"
+}
+
+Rules:
+- Rubric values are integers. Guide for each: 15-18 = simple but understandable; 19-22 = good with few errors; 23-25 = excellent for Grade 5. Be generous but honest.
+- corrections: at most 5, only real errors that matter (grammar, spelling, word choice). If there are none, use an empty list.
+- Do NOT rewrite the whole text and do NOT write a model answer.
+- Every English string must be simple enough for a Grade 5 ESL reader.
+- Never be harsh or sarcastic. Focus on progress."""
 
 
-def remove_disliked_topic():
-    disliked_topic = st.session_state.topic
-    if disliked_topic in st.session_state.topic_bank:
-        st.session_state.topic_bank.remove(disliked_topic)
-    st.session_state.topic = pick_random_topic()
+def parse_feedback(text):
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.strip("`").strip()
+        if t.lower().startswith("json"):
+            t = t[4:]
+    data = json.loads(t)
+    raw = data.get("rubric", {})
+    rub = {k: max(0, min(25, int(raw.get(k, 0)))) for k in ("grammar", "vocabulary", "ideas", "clarity")}
+    data["rubric"] = rub
+    data["score"] = sum(rub.values())
+    data["strengths"] = list(data.get("strengths") or [])
+    data["corrections"] = list(data.get("corrections") or [])
+    return data
 
 
-# ---------------------------------------------------------
-# Sidebar Navigation
-# ---------------------------------------------------------
-st.sidebar.title("📖 Navigation")
-page = st.sidebar.radio(
-    "Go to:", ["✍️ Daily Practice", "📚 Writing History"], index=0
-)
+def grade(topic, essay, name, words):
+    client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+    cfg = types.GenerateContentConfig(
+        system_instruction=SYSTEM,
+        response_mime_type="application/json",
+        temperature=0.4,
+        max_output_tokens=1500,
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
+    )
+    prompt = f"Student first name: {name}\nTopic: {topic}\nWord count: {words}\n\nStudent's writing:\n{essay}"
+    last_err = None
+    for model in MODELS:
+        for attempt in range(2):
+            try:
+                resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+                return parse_feedback(resp.text)
+            except Exception as e:
+                last_err = e
+                msg = str(e)
+                retryable = (
+                    "503" in msg or "UNAVAILABLE" in msg
+                    or isinstance(e, (json.JSONDecodeError, ValueError, KeyError))
+                )
+                if retryable and attempt == 0:
+                    time.sleep(3)
+                    continue
+                break  # quota (429), model not found, etc. -> try the next model
+    raise last_err
 
-# ---------------------------------------------------------
-# PAGE 1: Daily Practice
-# ---------------------------------------------------------
-if page == "✍️ Daily Practice":
-    st.title("✍️ Daily English Writing Challenge")
-    st.write("Welcome to your daily English writing space!")
 
-    # 快捷输入姓名与邮箱
-    col_name, col_email = st.columns([1, 1])
-    with col_name:
-        raw_name = st.text_input(
-            "👤 Name / 姓名:", key="student_name_input", placeholder="e.g. Aiden"
-        )
-    with col_email:
-        raw_email = st.text_input(
-            "📧 Email / 邮箱:",
-            key="student_email_input",
-            placeholder="e.g. aiden@example.com",
-        )
+# ---------------------------------------------------------------
+# Email to parent
+# ---------------------------------------------------------------
+def send_email(name, email, topic, essay, fb):
+    sender = st.secrets.get("EMAIL_SENDER", "")
+    password = st.secrets.get("EMAIL_PASSWORD", "")
+    receiver = st.secrets.get("EMAIL_RECEIVER", "")
+    if not (sender and password and receiver):
+        return False, "Email settings are missing in secrets."
 
-    student_name = raw_name.strip() if raw_name.strip() else "Student"
-    student_email = raw_email.strip().lower()
+    r = fb["rubric"]
+    fixes = "\n".join(
+        f'- "{c.get("original", "")}" -> "{c.get("suggestion", "")}" ({c.get("why", "")})'
+        for c in fb["corrections"]
+    ) or "- None. Great!"
+    body = f"""{name} ({email}) just finished today's letter.
 
-    st.markdown("---")
-    st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
+Topic: {topic}
 
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        st.button(
-            "🔄 New Topic (Keep for later)",
-            on_click=switch_to_next_topic,
-            use_container_width=True,
-        )
-    with col2:
-        st.button(
-            "❌ Not Interested (Skip topic)",
-            on_click=remove_disliked_topic,
-            use_container_width=True,
-        )
+Score: {fb['score']}/100
+Grammar {r['grammar']}/25 | Vocabulary {r['vocabulary']}/25 | Ideas {r['ideas']}/25 | Clarity {r['clarity']}/25
 
-    st.markdown("---")
+家长小结: {fb.get('parent_note_zh', '')}
 
-    # 使用 st.form 确保点击 Submit 100% 触发后台 Python 逻辑，绝不卡死
-    with st.form(key="writing_submission_form"):
-        user_input = st.text_area(
-            f"✍️ Write your response below, {student_name}! (Aim for 100-200 words):",
-            key="writing_draft",
-            height=240,
-            placeholder="Start typing your entry here...",
-        )
+--- {name}'s writing ---
+{essay}
 
-        word_count = len(user_input.split()) if user_input.strip() else 0
-        st.caption(f"📝 Word Count: **{word_count} / 200** words")
+--- Corrections ---
+{fixes}
 
-        submit_pressed = st.form_submit_button(
-            "🚀 Submit & Grade", use_container_width=True
-        )
-
-    def send_email_to_parent(name, topic, student_text, ai_feedback):
-        sender = st.secrets.get("EMAIL_SENDER", "")
-        password = st.secrets.get("EMAIL_PASSWORD", "")
-        receiver = st.secrets.get("EMAIL_RECEIVER", "")
-
-        if not sender or not password or not receiver:
-            return False, "Email credentials missing."
-
-        try:
-            msg = MIMEMultipart()
-            msg["From"] = f"Daily Writing App <{sender}>"
-            msg["To"] = receiver
-            msg["Subject"] = f"📝 Daily Writing Submission from {name}"
-
-            body = f"""Hi,
-
-{name} has just submitted a new writing practice!
-
-👤 Student: {name}
-📧 Email: {student_email}
-
-📌 Topic:
-{topic}
-
-✍️ {name}'s Submission:
-{student_text}
-
---------------------------------------------------
-🤖 AI Teacher Feedback & Review:
-{ai_feedback}
-
----
-Sent automatically by Daily English Writing Challenge App.
+Tip for tomorrow: {fb.get('tip', '')}
 """
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = Header(f"Daily Letter: {name} scored {fb['score']}/100", "utf-8")
+    msg["From"] = sender
+    msg["To"] = receiver
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=20) as s:
+            s.login(sender, password)
+            s.send_message(msg)
+        return True, "sent"
+    except Exception as e:
+        return False, str(e)
 
-            server = smtplib.SMTP("smtp.gmail.com", 587)
-            server.starttls()
-            server.login(sender, password)
-            server.send_message(msg)
-            server.quit()
-            return True, "Email sent successfully!"
-        except Exception as e:
-            return False, str(e)
 
-    # 批改逻辑响应
-    if submit_pressed:
-        if not raw_name.strip():
-            st.warning("⚠️ Please enter your name in the box above before submitting!")
-        elif not raw_email.strip():
-            st.warning(
-                "⚠️ Please enter your email address in the box above to record your portfolio!"
-            )
-        elif not user_input.strip():
-            st.warning("⚠️ Please write something in the text area before submitting!")
-        elif not api_key:
-            st.error("⚠️ GEMINI_API_KEY Missing in Streamlit Secrets!")
+# ---------------------------------------------------------------
+# UI helpers
+# ---------------------------------------------------------------
+def render_feedback(fb):
+    c1, c2 = st.columns([1, 2])
+    c1.metric("Score", f"{fb['score']} / 100")
+    c2.subheader(fb.get("grade_label", "Nice work!"))
+    for label, key in (("Grammar", "grammar"), ("Vocabulary", "vocabulary"), ("Ideas", "ideas"), ("Clarity", "clarity")):
+        v = fb["rubric"][key]
+        st.progress(v / 25, text=f"{label}: {v}/25")
+    if fb.get("strengths"):
+        st.markdown("**🌟 What went well**")
+        for s in fb["strengths"]:
+            st.markdown(f"- {s}")
+    if fb.get("corrections"):
+        st.markdown("**✏️ Let's polish**")
+        for c in fb["corrections"]:
+            st.markdown(f"~~{c.get('original', '')}~~ → **{c.get('suggestion', '')}**")
+            st.caption(c.get("why", ""))
+    if fb.get("tip"):
+        st.info(f"💡 Try tomorrow: {fb['tip']}")
+    if fb.get("encouragement"):
+        st.success(fb["encouragement"])
+
+
+def bump_swap(key):
+    st.session_state[key] = st.session_state.get(key, 0) + 1
+
+
+# ---------------------------------------------------------------
+# Who is writing? (name + email, remembered through the page URL)
+# ---------------------------------------------------------------
+st.sidebar.title("✍️ Daily Letter")
+qp = st.query_params
+name = st.sidebar.text_input("Name", value=qp.get("name", ""), key="name_in").strip()
+email = st.sidebar.text_input("Email", value=qp.get("email", ""), key="email_in").strip().lower()
+valid_email = "@" in email and "." in email.split("@")[-1]
+
+if name and valid_email:
+    if qp.get("name") != name or qp.get("email") != email:
+        st.query_params["name"] = name
+        st.query_params["email"] = email
+    st.sidebar.caption("Tip: bookmark this page. Next time you won't need to type again.")
+
+page = st.sidebar.radio("Go to", ["✍️ Write", "📈 My progress"])
+
+if not (name and valid_email):
+    st.title("✍️ Daily Letter")
+    st.info("Type your name and email in the left sidebar to start. (On a phone, tap the arrow at the top left.)")
+    st.stop()
+
+day = today_local()
+
+# ---------------------------------------------------------------
+# PAGE: Write
+# ---------------------------------------------------------------
+if page == "✍️ Write":
+    st.title(f"Hi {name}! ✍️")
+
+    swap_key = f"swaps:{email}:{day}"
+    swaps = st.session_state.get(swap_key, 0)
+    idx = topic_index(email, day, swaps)
+    cat, topic = TOPICS[idx]
+
+    st.caption(f"{CAT_LABEL[cat]}  ·  {day:%A, %B %d}")
+    st.info(f"### {topic}")
+    if swaps < MAX_SWAPS:
+        st.button("🔄 Give me a different topic", on_click=bump_swap, args=(swap_key,))
+
+    essay = st.text_area(
+        f"Write your letter here ({MAX_WORDS} words or fewer):",
+        height=260,
+        key=f"draft:{email}:{day}:{swaps}",
+        placeholder="Start typing here...",
+    )
+    words = len(essay.split())
+    st.caption(f"📝 {words} / {MAX_WORDS} words  (the number updates when you click outside the box)")
+    if words > MAX_WORDS:
+        st.error(f"Too long by {words - MAX_WORDS} words. Try to make it shorter. Short and clear is great!")
+
+    if st.button("🚀 Submit", type="primary", use_container_width=True):
+        if words == 0:
+            st.warning("Please write something first.")
+        elif words > MAX_WORDS:
+            st.error(f"Please keep it to {MAX_WORDS} words or fewer, then submit again.")
         else:
-            with st.spinner(
-                f"🎨 AI Teacher is reviewing {student_name}'s writing... Please wait a few seconds!"
-            ):
+            fb = None
+            with st.spinner("Your teacher is reading your letter..."):
                 try:
-                    genai.configure(api_key=api_key)
-                    # 使用标准免费额度模型
-                    model = genai.GenerativeModel("gemini-1.5-flash")
-
-                    prompt = f"""
-                    You are an encouraging, inspiring Grade 5 English teacher in Canada.
-                    Review this response by ESL student: {student_name}.
-
-                    Topic: "{st.session_state.topic}"
-                    Student Writing: "{user_input}"
-                    Word Count: {word_count} words.
-
-                    Provide feedback strictly in English formatted in Markdown:
-                    ### 📊 Score & Overall Impression
-                    * **Overall Score**: [X]/10
-                    * **Grammar & Spelling**: [X]/5
-                    * **Vocabulary & Word Choice**: [X]/5
-                    * **Content Expansion & Details**: [X]/5
-
-                    ### 🌟 What You Did Great
-                    - Point 1
-                    - Point 2
-
-                    ### ✏️ Corrections & Improvements
-                    - **Original**: "[Original sentence]"
-                    - **Correction**: "[Corrected sentence]"
-                    - **Why**: [Brief explanation]
-
-                    ### 💡 How to Expand Your Writing (Break 100 Words!)
-                    Give 3 concrete ways to add more content.
-
-                    ### 🚀 Model Expansion (Example Version: 100-120 Words)
-                    Rewrite ideas into a model 100-120 word paragraph.
-                    """
-
-                    response = model.generate_content(prompt)
-                    full_feedback = response.text
-
-                    st.markdown("### 📝 AI Teacher's Evaluation:")
-                    st.markdown(full_feedback)
-                    st.success(f"🎉 Great job, {student_name}! Review Completed!")
-
-                    save_submission(
-                        student_name,
-                        student_email,
-                        st.session_state.topic,
-                        user_input,
-                        full_feedback,
-                    )
-                    send_email_to_parent(
-                        student_name,
-                        st.session_state.topic,
-                        user_input,
-                        full_feedback,
-                    )
-                    st.toast("📧 Saved to portfolio & notification sent!")
-
+                    fb = grade(topic, essay, name, words)
                 except Exception as e:
-                    if "429" in str(e):
-                        st.error(
-                            "⚠️ AI 老师今日免费批改次数已用完（429 Quota Exceeded）。请稍等或明天再试！"
-                        )
-                    else:
-                        st.error(f"An error occurred during review: {e}")
+                    st.error("The teacher is busy right now. Your writing is still here. Please wait one minute and press Submit again.")
+                    with st.expander("Details for parent"):
+                        st.code(str(e))
+            if fb:
+                now = dt.datetime.now(TZ)
+                row = {
+                    "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                    "email": email, "name": name, "date": day.isoformat(),
+                    "topic_idx": idx, "topic": topic, "essay": essay,
+                    "word_count": words, "score": fb["score"],
+                    "grammar": fb["rubric"]["grammar"],
+                    "vocabulary": fb["rubric"]["vocabulary"],
+                    "ideas": fb["rubric"]["ideas"],
+                    "clarity": fb["rubric"]["clarity"],
+                    "feedback_json": json.dumps(fb, ensure_ascii=False),
+                }
+                saved = save_entry(row)
+                mailed = send_email(name, email, topic, essay, fb)
+                st.session_state["result"] = {
+                    "who": (email, str(day)), "fb": fb, "saved": saved, "mailed": mailed,
+                }
 
-# ---------------------------------------------------------
-# PAGE 2: Writing History (Portfolio)
-# ---------------------------------------------------------
-elif page == "📚 Writing History":
-    st.title("📚 Student Writing Portfolio & History")
-    st.write(
-        "Enter your email address to view all your past writing entries and AI feedback!"
-    )
+    res = st.session_state.get("result")
+    if res and res["who"] == (email, str(day)):
+        st.markdown("---")
+        st.subheader("📝 Your teacher's feedback")
+        render_feedback(res["fb"])
+        if not res["saved"][0]:
+            st.warning("Your letter could not be saved to your progress history.")
+            st.caption(res["saved"][1])
+        if not res["mailed"][0]:
+            st.warning("The email to your parent could not be sent.")
+            st.caption(res["mailed"][1])
 
-    search_email = (
-        st.text_input(
-            "📧 Enter your email to search / 输入邮箱查询历史记录:",
-            placeholder="e.g. aiden@example.com",
-        )
-        .strip()
-        .lower()
-    )
+# ---------------------------------------------------------------
+# PAGE: My progress
+# ---------------------------------------------------------------
+else:
+    st.title("📈 My progress")
+    entries = load_entries(email)
+    if not entries:
+        st.info("No letters yet. Write your first one today!")
+        st.stop()
 
-    if search_email:
-        all_history = load_history()
-        user_records = [
-            rec for rec in all_history if rec.get("email") == search_email
-        ]
+    df = pd.DataFrame(entries)
+    df["score"] = pd.to_numeric(df["score"], errors="coerce")
 
-        if not user_records:
-            st.info(
-                f"No writing entries found for `{search_email}` yet. Go complete a daily challenge!"
-            )
-        else:
-            user_records.reverse()
-            st.success(
-                f"Found {len(user_records)} writing entries for `{search_email}`!"
-            )
+    dates = {str(r.get("date")) for r in entries}
+    d = day
+    if d.isoformat() not in dates:
+        d -= dt.timedelta(days=1)
+    streak = 0
+    while d.isoformat() in dates:
+        streak += 1
+        d -= dt.timedelta(days=1)
 
-            st.markdown("---")
-            st.subheader("📋 Select an Entry to View Details:")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Letters", len(entries))
+    m2.metric("Avg (last 7)", f"{df['score'].tail(7).mean():.0f}")
+    m3.metric("Best", f"{df['score'].max():.0f}")
+    m4.metric("Streak 🔥", f"{streak} days")
 
-            options = [
-                f"[{rec['timestamp']}] {rec['topic'][:50]}..."
-                for rec in user_records
-            ]
+    st.line_chart(df.set_index("timestamp")["score"], height=220)
 
-            selected_option = st.selectbox(
-                "Choose a submission date / 选择提交记录:", options=options
-            )
-
-            selected_index = options.index(selected_option)
-            selected_record = user_records[selected_index]
-
-            st.markdown("---")
-            st.markdown(f"### 📌 Topic: {selected_record['topic']}")
-            st.caption(
-                f"👤 **Student**: {selected_record['student_name']} | 📅 **Submitted At**: {selected_record['timestamp']}"
-            )
-
-            with st.expander("✍️ View Original Student Writing", expanded=True):
-                st.write(selected_record["user_input"])
-
-            with st.expander(
-                "🤖 View AI Teacher Evaluation & Review", expanded=True
-            ):
-                st.markdown(selected_record["ai_feedback"])
+    st.subheader("Past letters")
+    for r in reversed(entries[-30:]):
+        with st.expander(f"{r.get('date')}  ·  {r.get('score')}/100  ·  {str(r.get('topic', ''))[:60]}"):
+            st.markdown(f"**{r.get('topic', '')}**")
+            st.write(r.get("essay", ""))
+            try:
+                render_feedback(json.loads(r["feedback_json"]))
+            except Exception:
+                st.caption("(No feedback saved for this letter.)")

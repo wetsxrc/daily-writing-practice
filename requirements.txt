@@ -1,2 +1,5 @@
-streamlit
-google-generativeai
+streamlit>=1.36
+google-genai
+gspread
+pandas
+tzdata
