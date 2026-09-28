@@ -21,7 +21,7 @@ st.set_page_config(page_title="Daily Letter", page_icon="✍️", layout="center
 # Settings
 # ---------------------------------------------------------------
 TZ = ZoneInfo("America/Toronto")
-START_DATE = dt.date(2026, 10, 1)  # 不要修改！改了就等于从第一题重新开始
+START_DATE = dt.date(2026, 09, 27)  # 不要修改！改了就等于从第一题重新开始
 MAX_WORDS = 200
 MAX_SWAPS = 3  # how many times a child may ask for a different topic per day
 MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]  # tried in order
