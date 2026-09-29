@@ -21,10 +21,11 @@ st.set_page_config(page_title="Daily Letter", page_icon="✍️", layout="center
 # Settings
 # ---------------------------------------------------------------
 TZ = ZoneInfo("America/Toronto")
-START_DATE = dt.date(2026, 9, 27)  # 不要修改！改了就等于从第一题重新开始
+START_DATE = dt.date(2026, 10, 1)  # 不要修改！改了就等于从第一题重新开始
 MAX_WORDS = 200
 MAX_SWAPS = 3  # how many times a child may ask for a different topic per day
-MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]  # tried in order
+MODELS = ["gemini-3.5-flash-lite", "gemini-3.7-flash", "gemini-3.8-flash"]  # tried in order, cheapest first
+API_VERSIONS = ["v1beta", "v1"]  # some accounts hit spurious 404s on v1beta; v1 is a fallback
 LOCAL_FILE = "writing_history.json"  # fallback only (lost on redeploy!)
 HEADERS = [
     "timestamp", "email", "name", "date", "topic_idx", "topic", "essay",
@@ -159,7 +160,7 @@ def parse_feedback(text):
 
 
 def grade(topic, essay, name, words):
-    client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+    api_key = st.secrets["GEMINI_API_KEY"]
     cfg = types.GenerateContentConfig(
         system_instruction=SYSTEM,
         response_mime_type="application/json",
@@ -169,22 +170,31 @@ def grade(topic, essay, name, words):
     )
     prompt = f"Student first name: {name}\nTopic: {topic}\nWord count: {words}\n\nStudent's writing:\n{essay}"
     last_err = None
+    # Try every (model, api_version) combination in order. A 404 (model not
+    # routed for this account on that api version) or a quota error simply
+    # moves on to the next combination; only transient server errors get a
+    # short retry before moving on.
     for model in MODELS:
-        for attempt in range(2):
-            try:
-                resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
-                return parse_feedback(resp.text)
-            except Exception as e:
-                last_err = e
-                msg = str(e)
-                retryable = (
-                    "503" in msg or "UNAVAILABLE" in msg
-                    or isinstance(e, (json.JSONDecodeError, ValueError, KeyError))
-                )
-                if retryable and attempt == 0:
-                    time.sleep(3)
-                    continue
-                break  # quota (429), model not found, etc. -> try the next model
+        for api_version in API_VERSIONS:
+            client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(api_version=api_version),
+            )
+            for attempt in range(2):
+                try:
+                    resp = client.models.generate_content(model=model, contents=prompt, config=cfg)
+                    return parse_feedback(resp.text)
+                except Exception as e:
+                    last_err = e
+                    msg = str(e)
+                    transient = (
+                        "503" in msg or "UNAVAILABLE" in msg
+                        or isinstance(e, (json.JSONDecodeError, ValueError, KeyError))
+                    )
+                    if transient and attempt == 0:
+                        time.sleep(3)
+                        continue
+                    break  # 404 / 429 / anything else -> try the next combination
     raise last_err
 
 
