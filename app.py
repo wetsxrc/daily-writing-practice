@@ -208,10 +208,13 @@ def grade(topic, essay, name, words):
 # ---------------------------------------------------------------
 # Email to parent
 # ---------------------------------------------------------------
-def send_email(name, email, topic, essay, fb):
+def send_email(name, email, topic, essay, fb, receiver=None):
     sender = st.secrets.get("EMAIL_SENDER", "")
     password = st.secrets.get("EMAIL_PASSWORD", "")
-    receiver = st.secrets.get("EMAIL_RECEIVER", "")
+    # Each writer can give their own parent's email; if they leave it blank,
+    # fall back to the app-wide default set in secrets (keeps old bookmarked
+    # links working unchanged).
+    receiver = receiver or st.secrets.get("EMAIL_RECEIVER", "")
     if not (sender and password and receiver):
         return False, "Email settings are missing in secrets."
 
@@ -291,21 +294,37 @@ def bump_swap(key):
 # ---------------------------------------------------------------
 st.sidebar.title("✍️ Daily Letter")
 qp = st.query_params
+
+
+def _looks_like_email(e):
+    return "@" in e and "." in e.split("@")[-1]
+
+
 name = st.sidebar.text_input("Name", value=qp.get("name", ""), key="name_in").strip()
 email = st.sidebar.text_input("Email", value=qp.get("email", ""), key="email_in").strip().lower()
-valid_email = "@" in email and "." in email.split("@")[-1]
+parent_email = st.sidebar.text_input(
+    "Parent's email (receives the feedback email)",
+    value=qp.get("parent_email", ""),
+    key="parent_email_in",
+    help="Each time you submit, your teacher's feedback is emailed here instead of to the app owner.",
+).strip().lower()
+valid_email = _looks_like_email(email)
+valid_parent_email = parent_email == "" or _looks_like_email(parent_email)
+if parent_email and not valid_parent_email:
+    st.sidebar.caption("⚠️ That doesn't look like a valid email yet.")
 
-if name and valid_email:
-    if qp.get("name") != name or qp.get("email") != email:
+if name and valid_email and valid_parent_email:
+    if qp.get("name") != name or qp.get("email") != email or qp.get("parent_email") != parent_email:
         st.query_params["name"] = name
         st.query_params["email"] = email
+        st.query_params["parent_email"] = parent_email
     st.sidebar.caption("Tip: bookmark this page. Next time you won't need to type again.")
 
 page = st.sidebar.radio("Go to", ["✍️ Write", "📈 My progress"])
 
-if not (name and valid_email):
+if not (name and valid_email and valid_parent_email):
     st.title("✍️ Daily Letter")
-    st.info("Type your name and email in the left sidebar to start. (On a phone, tap the arrow at the top left.)")
+    st.info("Type your name and email in the left sidebar to start. (On a phone, tap the arrow at the top left.) Adding a parent's email is optional.")
     st.stop()
 
 day = today_local()
@@ -365,7 +384,7 @@ if page == "✍️ Write":
                     "feedback_json": json.dumps(fb, ensure_ascii=False),
                 }
                 saved = save_entry(row)
-                mailed = send_email(name, email, topic, essay, fb)
+                mailed = send_email(name, email, topic, essay, fb, receiver=parent_email or None)
                 st.session_state["result"] = {
                     "who": (email, str(day)), "fb": fb, "saved": saved, "mailed": mailed,
                 }
