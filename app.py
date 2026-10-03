@@ -300,32 +300,68 @@ def _looks_like_email(e):
     return "@" in e and "." in e.split("@")[-1]
 
 
-name = st.sidebar.text_input("Name", value=qp.get("name", ""), key="name_in").strip()
-email = st.sidebar.text_input("Email", value=qp.get("email", ""), key="email_in").strip().lower()
-parent_email = st.sidebar.text_input(
-    "Parent's email (receives the feedback email)",
-    value=qp.get("parent_email", ""),
-    key="parent_email_in",
-    help="Each time you submit, your teacher's feedback is emailed here instead of to the app owner.",
-).strip().lower()
-valid_email = _looks_like_email(email)
-valid_parent_email = parent_email == "" or _looks_like_email(parent_email)
-if parent_email and not valid_parent_email:
-    st.sidebar.caption("⚠️ That doesn't look like a valid email yet.")
+# Identity (name / email / parent's email) lives in session_state, not in
+# always-editable sidebar widgets. This matters: a plain st.sidebar.text_input
+# triggers an immediate page rerun on Enter, and if a student was mid-essay
+# with not-yet-synced keystrokes in the writing box, that rerun can wipe them.
+# Putting the editable fields inside a form (only submitted on a button click)
+# and hiding that form inside a collapsed expander once signed in means
+# nothing in the sidebar can trigger a surprise rerun while writing.
+if "identity" not in st.session_state:
+    st.session_state.identity = {
+        "name": qp.get("name", ""),
+        "email": qp.get("email", ""),
+        "parent_email": qp.get("parent_email", ""),
+    }
+ident = st.session_state.identity
+has_identity = bool(ident["name"]) and _looks_like_email(ident["email"]) and (
+    ident["parent_email"] == "" or _looks_like_email(ident["parent_email"])
+)
 
-if name and valid_email and valid_parent_email:
-    if qp.get("name") != name or qp.get("email") != email or qp.get("parent_email") != parent_email:
-        st.query_params["name"] = name
-        st.query_params["email"] = email
-        st.query_params["parent_email"] = parent_email
-    st.sidebar.caption("Tip: bookmark this page. Next time you won't need to type again.")
+
+def identity_form(container):
+    with container.form("identity_form", clear_on_submit=False):
+        name_in = st.text_input("Name", value=ident["name"])
+        email_in = st.text_input("Email", value=ident["email"])
+        parent_email_in = st.text_input(
+            "Parent's email (receives the feedback email)",
+            value=ident["parent_email"],
+            help="Each submission's feedback is emailed here. Leave blank to use the app's default address.",
+        )
+        submitted = st.form_submit_button("💾 Save")
+    if not submitted:
+        return
+    new_email = email_in.strip().lower()
+    new_parent_email = parent_email_in.strip().lower()
+    if not name_in.strip():
+        container.error("Please enter your name.")
+    elif not _looks_like_email(new_email):
+        container.error("Please enter a valid email for yourself.")
+    elif new_parent_email and not _looks_like_email(new_parent_email):
+        container.error("That parent's email doesn't look valid yet.")
+    else:
+        st.session_state.identity = {
+            "name": name_in.strip(), "email": new_email, "parent_email": new_parent_email,
+        }
+        st.query_params["name"] = st.session_state.identity["name"]
+        st.query_params["email"] = st.session_state.identity["email"]
+        st.query_params["parent_email"] = st.session_state.identity["parent_email"]
+        st.rerun()
+
+
+if not has_identity:
+    st.title("✍️ Daily Letter")
+    st.info("Fill in your name and email to start, then click Save. Adding a parent's email is optional — leave it blank to send feedback to the app's default address.")
+    identity_form(st)
+    st.stop()
+
+name, email, parent_email = ident["name"], ident["email"], ident["parent_email"]
+st.sidebar.success(f"Signed in as **{name}**")
+st.sidebar.caption("Tip: bookmark this page. Next time you won't need to sign in again.")
+with st.sidebar.expander("✏️ Edit my info"):
+    identity_form(st.sidebar)
 
 page = st.sidebar.radio("Go to", ["✍️ Write", "📈 My progress"])
-
-if not (name and valid_email and valid_parent_email):
-    st.title("✍️ Daily Letter")
-    st.info("Type your name and email in the left sidebar to start. (On a phone, tap the arrow at the top left.) Adding a parent's email is optional.")
-    st.stop()
 
 day = today_local()
 
