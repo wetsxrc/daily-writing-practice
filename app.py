@@ -6,7 +6,7 @@ import smtplib
 import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import google.generativeai as genai
+from google import genai
 import streamlit as st
 
 # 1. Page Configuration
@@ -242,7 +242,7 @@ Sent automatically by Daily English Writing Challenge App.
         except Exception as e:
             return False, str(e)
 
-    # AI Grading Logic with 503 Auto-Retry & Fallback
+    # AI Grading Logic using google-genai SDK with 503 Auto-Retry & Fallback
     if submit_pressed:
         if not raw_name.strip():
             st.warning("⚠️ Please enter your name in the box above before submitting!")
@@ -259,7 +259,7 @@ Sent automatically by Daily English Writing Challenge App.
                 f"🎨 Your teacher is reading {student_name}'s letter... Please wait a few seconds!"
             ):
                 try:
-                    genai.configure(api_key=api_key)
+                    client = genai.Client(api_key=api_key)
 
                     prompt = f"""
                     You are an encouraging, inspiring Grade 5 English teacher in Canada.
@@ -292,16 +292,17 @@ Sent automatically by Daily English Writing Challenge App.
                     Rewrite ideas into a model 100-120 word paragraph.
                     """
 
-                    # Try primary model first, fallback to secondary model on 503 overload
-                    models_to_try = ["gemini-1.5-flash", "gemini-2.0-flash"]
+                    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
                     full_feedback = None
                     last_error = None
 
                     for model_name in models_to_try:
                         for attempt in range(2):
                             try:
-                                current_model = genai.GenerativeModel(model_name)
-                                response = current_model.generate_content(prompt)
+                                response = client.models.generate_content(
+                                    model=model_name,
+                                    contents=prompt,
+                                )
                                 full_feedback = response.text
                                 break
                             except Exception as e:
