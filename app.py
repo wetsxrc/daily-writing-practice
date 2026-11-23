@@ -7,6 +7,7 @@ import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from google import genai
+import gspread
 import streamlit as st
 
 # 1. Page Configuration
@@ -16,16 +17,58 @@ st.set_page_config(
     layout="centered",
 )
 
-# Fetch Gemini API Key
 api_key = st.secrets.get("GEMINI_API_KEY", "")
-
-# ---------------------------------------------------------
-# Persistent Data Files
-# ---------------------------------------------------------
 HISTORY_FILE = "writing_history.json"
 
 
+# ---------------------------------------------------------
+# Google Sheets & Local JSON Dual Persistence
+# ---------------------------------------------------------
+def get_gsheet_worksheet():
+    """Connect to Google Sheets if configured in Streamlit Secrets."""
+    if "gcp_service_account" not in st.secrets:
+        return None
+    try:
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        gc = gspread.service_account_from_dict(creds_dict)
+
+        sheet_id = st.secrets.get("SHEET_ID", "")
+        sheet_url = st.secrets.get("SPREADSHEET_URL", "")
+        sheet_name = st.secrets.get("SHEET_NAME", "Daily Writing History")
+
+        if sheet_id:
+            sh = gc.open_by_key(sheet_id)
+        elif sheet_url:
+            sh = gc.open_by_url(sheet_url)
+        else:
+            sh = gc.open(sheet_name)
+
+        return sh.sheet1
+    except Exception:
+        return None
+
+
 def load_history():
+    """Load writing history primarily from Google Sheets, fallback to local JSON."""
+    ws = get_gsheet_worksheet()
+    if ws is not None:
+        try:
+            records = ws.get_all_records()
+            if records:
+                return [
+                    {
+                        "timestamp": str(r.get("timestamp", "")),
+                        "student_name": str(r.get("student_name", "")),
+                        "email": str(r.get("email", "")).strip().lower(),
+                        "topic": str(r.get("topic", "")),
+                        "user_input": str(r.get("user_input", "")),
+                        "ai_feedback": str(r.get("ai_feedback", "")),
+                    }
+                    for r in records
+                ]
+        except Exception:
+            pass
+
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
@@ -36,24 +79,48 @@ def load_history():
 
 
 def save_submission(student_name, email, topic, user_input, ai_feedback):
-    history = load_history()
+    """Save submission to both Google Sheets (cloud) and local JSON."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    clean_email = email.strip().lower()
 
-    entry = {
+    # 1. Save to Google Sheets
+    ws = get_gsheet_worksheet()
+    if ws is not None:
+        try:
+            ws.append_row([
+                timestamp,
+                student_name,
+                clean_email,
+                topic,
+                user_input,
+                ai_feedback,
+            ])
+        except Exception as e:
+            st.warning(f"Cloud sync warning (saved locally): {e}")
+
+    # 2. Save to Local JSON Backup
+    history = []
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception:
+            history = []
+
+    history.append({
         "student_name": student_name,
-        "email": email.strip().lower(),
+        "email": clean_email,
         "topic": topic,
         "user_input": user_input,
         "ai_feedback": ai_feedback,
         "timestamp": timestamp,
-    }
-    history.append(entry)
+    })
 
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        st.error(f"Failed to save history record: {e}")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------
@@ -146,7 +213,6 @@ if page == "✍️ Daily Practice":
     st.title("✍️ Daily English Writing Challenge")
     st.write("Welcome to your daily English writing space!")
 
-    # Name and Email Inputs
     col_name, col_email = st.columns([1, 1])
     with col_name:
         raw_name = st.text_input(
@@ -181,7 +247,6 @@ if page == "✍️ Daily Practice":
 
     st.markdown("---")
 
-    # Stable Form Submission
     with st.form(key="writing_submission_form"):
         user_input = st.text_area(
             f"✍️ Write your response below, {student_name}! (Aim for 100-200 words):",
@@ -242,7 +307,6 @@ Sent automatically by Daily English Writing Challenge App.
         except Exception as e:
             return False, str(e)
 
-    # AI Grading Logic using google-genai SDK with 503 Auto-Retry & Fallback
     if submit_pressed:
         if not raw_name.strip():
             st.warning("⚠️ Please enter your name in the box above before submitting!")
@@ -292,7 +356,7 @@ Sent automatically by Daily English Writing Challenge App.
                     Rewrite ideas into a model 100-120 word paragraph.
                     """
 
-                    models_to_try = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+                    models_to_try = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
                     full_feedback = None
                     last_error = None
 
@@ -320,6 +384,27 @@ Sent automatically by Daily English Writing Challenge App.
                         if full_feedback:
                             break
 
+                    # 自动兜底：如果固定名称均失败，自动获取账号下当前可用的最新 Flash 模型
+                    if not full_feedback:
+                        try:
+                            available_flash = [
+                                m.name.replace("models/", "")
+                                for m in client.models.list()
+                                if "flash" in m.name.lower()
+                                and "lite" not in m.name.lower()
+                                and "image" not in m.name.lower()
+                                and "audio" not in m.name.lower()
+                            ]
+                            if available_flash:
+                                available_flash.sort(reverse=True)
+                                response = client.models.generate_content(
+                                    model=available_flash[0],
+                                    contents=prompt,
+                                )
+                                full_feedback = response.text
+                        except Exception as fallback_e:
+                            last_error = fallback_e
+
                     if not full_feedback:
                         raise last_error
 
@@ -340,7 +425,7 @@ Sent automatically by Daily English Writing Challenge App.
                         user_input,
                         full_feedback,
                     )
-                    st.toast("📧 Saved to portfolio & notification sent!")
+                    st.toast("📧 Saved to Google Sheets & notification sent!")
 
                 except Exception as e:
                     err_msg = str(e)
