@@ -292,7 +292,7 @@ Sent automatically by Daily English Writing Challenge App.
                     Rewrite ideas into a model 100-120 word paragraph.
                     """
 
-                    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash"]
+                    models_to_try = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
                     full_feedback = None
                     last_error = None
 
