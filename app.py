@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import random
+import re
 import smtplib
 import time
 from email.mime.multipart import MIMEMultipart
@@ -19,13 +20,55 @@ st.set_page_config(
 
 api_key = st.secrets.get("GEMINI_API_KEY", "")
 HISTORY_FILE = "writing_history.json"
+TOPICS_FILE = "topic_bank.json"
+
+# ---------------------------------------------------------
+# Initial 35 Grade 5 Topics
+# ---------------------------------------------------------
+INITIAL_TOPIC_BANK = [
+    "Imagine you are building a time machine. Which period in history would you visit first and why?",
+    "If you could create one new rule for recess at your school, what would it be and how would it help?",
+    "Describe your favorite afternoon snack using sensory words (sight, smell, taste, texture).",
+    "If your pet or a favorite animal could talk for 10 minutes, what questions would you ask it?",
+    "What was the most interesting or surprising thing that happened at school this week?",
+    "Imagine you found a mysterious small brass key in your bedroom. What hidden box or secret door does it open?",
+    "What is your favorite outdoor game or sport to play with friends, and what makes it exciting?",
+    "If you could travel anywhere in Canada tomorrow, where would you go and what would you explore?",
+    "If you could design a brand-new video game or board game, what would the main goal and rules be?",
+    "If you woke up tomorrow with the ability to turn invisible for one day, what would you do?",
+    "Write about a time you tried something completely new. How did you feel before and after?",
+    "If you could trade places with any character in a book or movie for a day, who would it be?",
+    "What is the best piece of advice a family member or teacher has ever given you?",
+    "If you had $100 to spend on making your neighborhood or school a better place, how would you use it?",
+    "Describe what your dream bedroom would look like if you could design every detail.",
+    "Imagine you are an astronaut landing on a newly discovered planet. What does the landscape look like?",
+    "If you could invent a robot to help with one daily chore at home, how would it work?",
+    "Write a story about a day when gravity suddenly stopped working at your school for one hour.",
+    "What is your favorite season of the year in Canada, and what activities do you enjoy most during it?",
+    "If you could open your own restaurant or bakery, what would be on the menu?",
+    "Describe a memorable family road trip or weekend adventure you have been on.",
+    "If you could have any superpower, would you choose flying, super speed, or reading minds? Explain why.",
+    "Imagine you shrunk to the size of an ant for an afternoon. What would your backyard look like?",
+    "What is one skill or hobby you would love to master this year, and how do you plan to practice?",
+    "Write about a book you read recently that you would recommend to a friend.",
+    "If you were principal of your school for one day, what special event would you organize?",
+    "Describe the wildest weather storm you have ever seen from safely inside your house.",
+    "If you could invite three famous people (from history or today) to dinner, who would you pick?",
+    "What makes someone a truly good friend? Give examples from your own life.",
+    "Imagine you found a stranded baby dragon in your garage. How would you take care of it secretly?",
+    "If you could live inside any video game world for a weekend, which game would you choose?",
+    "Write about a time you solved a difficult problem or puzzle. What steps did you take?",
+    "What is your favorite holiday tradition with your family, and why is it special to you?",
+    "If animals could run the world for a week, which animal would be the best leader?",
+    "Describe a futuristic school in the year 2100. How would students learn and travel to class?",
+]
 
 
 # ---------------------------------------------------------
-# Google Sheets & Local JSON Dual Persistence
+# Google Sheets Connection (History & Topic_Bank Tabs)
 # ---------------------------------------------------------
-def get_gsheet_worksheet():
-    """Connect to Google Sheets if configured in Streamlit Secrets."""
+def get_gsheet_spreadsheet():
+    """Connect to the target Google Spreadsheet."""
     if "gcp_service_account" not in st.secrets:
         return None
     try:
@@ -37,25 +80,196 @@ def get_gsheet_worksheet():
         sheet_name = st.secrets.get("SHEET_NAME", "Daily Writing History")
 
         if sheet_id:
-            sh = gc.open_by_key(sheet_id)
+            return gc.open_by_key(sheet_id)
         elif sheet_url:
-            sh = gc.open_by_url(sheet_url)
+            return gc.open_by_url(sheet_url)
         else:
-            sh = gc.open(sheet_name)
-
-        return sh.sheet1
+            return gc.open(sheet_name)
     except Exception:
         return None
 
 
-def load_history():
-    """Load writing history primarily from Google Sheets, fallback to local JSON."""
+def get_gsheet_worksheet():
+    sh = get_gsheet_spreadsheet()
+    return sh.sheet1 if sh is not None else None
+
+
+def get_topic_bank_worksheet():
+    """Get or automatically create the 'Topic_Bank' tab in Google Sheets."""
+    sh = get_gsheet_spreadsheet()
+    if sh is None:
+        return None
+    try:
+        try:
+            ws = sh.worksheet("Topic_Bank")
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title="Topic_Bank", rows=1000, cols=2)
+            ws.append_row(["created_at", "topic"])
+        return ws
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------
+# Topic Bank Load, Save & Auto-Replenish (+35 when <= 5 left)
+# ---------------------------------------------------------
+def load_topic_bank(force_refresh=False):
+    """Load the master topic list from Google Sheets (Topic_Bank) or local JSON."""
+    if not force_refresh and "master_topic_bank" in st.session_state:
+        return st.session_state.master_topic_bank
+
+    topics = []
+    ws = get_topic_bank_worksheet()
+    if ws is not None:
+        try:
+            col_values = ws.col_values(2)  # Column B is 'topic'
+            topics = [t.strip() for t in col_values[1:] if t.strip()]
+            if not topics:
+                # First-time initialization: seed the 35 initial topics into Google Sheets
+                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                rows = [[now_str, t] for t in INITIAL_TOPIC_BANK]
+                ws.append_rows(rows)
+                topics = list(INITIAL_TOPIC_BANK)
+        except Exception:
+            pass
+
+    if not topics and os.path.exists(TOPICS_FILE):
+        try:
+            with open(TOPICS_FILE, "r", encoding="utf-8") as f:
+                topics = json.load(f)
+        except Exception:
+            topics = []
+
+    if not topics:
+        topics = list(INITIAL_TOPIC_BANK)
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique_topics = []
+    for t in topics:
+        if t not in seen:
+            seen.add(t)
+            unique_topics.append(t)
+
+    st.session_state.master_topic_bank = unique_topics
+    return unique_topics
+
+
+def append_topics_to_storage(new_topics):
+    """Save newly generated topics to Google Sheets (Topic_Bank) and local JSON."""
+    if not new_topics:
+        return
+
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ws = get_topic_bank_worksheet()
+    if ws is not None:
+        try:
+            rows = [[now_str, t] for t in new_topics]
+            ws.append_rows(rows)
+        except Exception:
+            pass
+
+    current_bank = load_topic_bank(force_refresh=False)
+    for t in new_topics:
+        if t not in current_bank:
+            current_bank.append(t)
+    st.session_state.master_topic_bank = current_bank
+
+    try:
+        with open(TOPICS_FILE, "w", encoding="utf-8") as f:
+            json.dump(current_bank, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def generate_35_new_topics(existing_topics):
+    """Call Gemini API to generate 35 fresh, non-duplicate Grade 5 writing prompts."""
+    if not api_key:
+        return []
+
+    client = genai.Client(api_key=api_key)
+    recent_sample = "\n".join(f"- {t}" for t in existing_topics[-40:])
+
+    prompt = f"""
+    You are an inspiring Grade 5 English teacher in Canada.
+    Generate exactly 35 brand-new, creative, age-appropriate daily English writing prompts for 10-11 year old students.
+
+    Requirements:
+    1. Mix diverse themes: imaginative storytelling, school life, Canadian seasons/nature, science & space, animals, problem-solving, humor, and personal reflection.
+    2. Each prompt should be 1 to 2 clear, engaging sentences that encourage students to write 100-200 words.
+    3. Do NOT repeat or closely copy any of these existing topics:
+    {recent_sample}
+
+    Output format:
+    Return ONLY a numbered list from 1 to 35, one prompt per line, with no extra introduction or conclusion.
+    """
+
+    models_to_try = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+    raw_text = None
+
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            raw_text = response.text
+            if raw_text:
+                break
+        except Exception:
+            continue
+
+    if not raw_text:
+        try:
+            available_flash = [
+                m.name.replace("models/", "")
+                for m in client.models.list()
+                if "flash" in m.name.lower()
+                and "lite" not in m.name.lower()
+                and "image" not in m.name.lower()
+                and "audio" not in m.name.lower()
+            ]
+            if available_flash:
+                available_flash.sort(reverse=True)
+                response = client.models.generate_content(
+                    model=available_flash[0],
+                    contents=prompt,
+                )
+                raw_text = response.text
+        except Exception:
+            return []
+
+    if not raw_text:
+        return []
+
+    existing_set = {t.lower().strip() for t in existing_topics}
+    parsed_topics = []
+
+    for line in raw_text.splitlines():
+        cleaned = re.sub(r"^\s*\d+[\.\)\-:]\s*", "", line).strip()
+        cleaned = cleaned.strip('"').strip("'").strip()
+        if len(cleaned) > 15 and cleaned.lower() not in existing_set:
+            existing_set.add(cleaned.lower())
+            parsed_topics.append(cleaned)
+
+    return parsed_topics[:35]
+
+
+# ---------------------------------------------------------
+# Writing History Persistence
+# ---------------------------------------------------------
+def load_history(force_refresh=False):
+    """Cache history in session_state so button clicks are instant."""
+    if not force_refresh and "cached_history" in st.session_state:
+        return st.session_state.cached_history
+
+    records_list = []
     ws = get_gsheet_worksheet()
     if ws is not None:
         try:
             records = ws.get_all_records()
             if records:
-                return [
+                records_list = [
                     {
                         "timestamp": str(r.get("timestamp", "")),
                         "student_name": str(r.get("student_name", "")),
@@ -69,13 +283,15 @@ def load_history():
         except Exception:
             pass
 
-    if os.path.exists(HISTORY_FILE):
+    if not records_list and os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                records_list = json.load(f)
         except Exception:
-            return []
-    return []
+            records_list = []
+
+    st.session_state.cached_history = records_list
+    return records_list
 
 
 def save_submission(student_name, email, topic, user_input, ai_feedback):
@@ -83,7 +299,6 @@ def save_submission(student_name, email, topic, user_input, ai_feedback):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     clean_email = email.strip().lower()
 
-    # 1. Save to Google Sheets
     ws = get_gsheet_worksheet()
     if ws is not None:
         try:
@@ -98,7 +313,6 @@ def save_submission(student_name, email, topic, user_input, ai_feedback):
         except Exception as e:
             st.warning(f"Cloud sync warning (saved locally): {e}")
 
-    # 2. Save to Local JSON Backup
     history = []
     if os.path.exists(HISTORY_FILE):
         try:
@@ -122,80 +336,92 @@ def save_submission(student_name, email, topic, user_input, ai_feedback):
     except Exception:
         pass
 
+    load_history(force_refresh=True)
+
 
 # ---------------------------------------------------------
-# Initial Default Topic Bank
+# Topic Pool Management & Auto-Replenish Trigger
 # ---------------------------------------------------------
-INITIAL_TOPIC_BANK = [
-    "Imagine you are building a time machine. Which period in history would you visit first?",
-    "If you could create one new rule for recess at your school, what would it be and why?",
-    "Describe your favorite afternoon snack using as many sensory words (sight, smell, taste) as possible.",
-    "If your pet or a favorite animal could talk for 10 minutes, what questions would you ask it?",
-    "What was the most interesting thing that happened in your class or school this week?",
-    "Imagine you found a mysterious small key in your room. What hidden box or room does it open?",
-    "What is your favorite outdoor activity to play with friends, and how do you play it?",
-    "If you could travel anywhere in Canada tomorrow, where would you go and what would you do there?",
-    "If you could design a new video game or board game, what would the goal of the game be?",
-    "If you woke up tomorrow with the ability to turn invisible, what is the first thing you would do?",
-    "Write about a time you tried something new. How did you feel before and after?",
-    "If you could trade places with any character in a book or movie for one day, who would it be?",
-    "What is the best piece of advice a family member or teacher has ever given you?",
-    "If you had $100 to spend on making your community a better place, how would you use it?",
-    "Describe what your dream bedroom would look like if you had an unlimited budget.",
-]
+if "skipped_topics" not in st.session_state:
+    st.session_state.skipped_topics = set()
 
-# ---------------------------------------------------------
-# Session State Initialization
-# ---------------------------------------------------------
-history_records = load_history()
-completed_topics_set = {item["topic"] for item in history_records}
 
-if "topic_bank" not in st.session_state:
-    st.session_state.topic_bank = [
-        t for t in INITIAL_TOPIC_BANK if t not in completed_topics_set
+def get_available_topics(student_email="", auto_replenish=True):
+    """Return uncompleted topics for this student; auto-generate 35 more when <= 5 remain."""
+    master_bank = load_topic_bank()
+    all_history = load_history()
+    clean_email = student_email.strip().lower()
+
+    if clean_email:
+        completed_set = {
+            item["topic"]
+            for item in all_history
+            if item.get("email", "").strip().lower() == clean_email
+        }
+    else:
+        completed_set = set()
+
+    # Uncompleted topics in the entire bank for this student
+    uncompleted_topics = [t for t in master_bank if t not in completed_set]
+
+    # Auto-replenish trigger: when uncompleted topics drop to <= 5, generate 35 new topics
+    if auto_replenish and len(uncompleted_topics) <= 5:
+        with st.spinner("✨ Only a few topics left! Creating 35 brand-new topics for you..."):
+            newly_generated = generate_35_new_topics(master_bank)
+            if newly_generated:
+                append_topics_to_storage(newly_generated)
+                master_bank = load_topic_bank()
+                uncompleted_topics = [
+                    t for t in master_bank if t not in completed_set
+                ]
+
+    available = [
+        t
+        for t in uncompleted_topics
+        if t not in st.session_state.skipped_topics
     ]
 
+    # If user skipped all remaining topics in this session, reset skipped list
+    if not available:
+        st.session_state.skipped_topics = set()
+        available = list(uncompleted_topics)
 
-def pick_random_topic():
-    current_history = load_history()
-    completed_set = {item["topic"] for item in current_history}
+    if not available:
+        available = list(master_bank)
 
-    st.session_state.topic_bank = [
-        t for t in st.session_state.topic_bank if t not in completed_set
-    ]
+    return available
 
-    if not st.session_state.topic_bank:
-        st.session_state.topic_bank = [
-            t for t in INITIAL_TOPIC_BANK if t not in completed_set
-        ]
 
-    current = st.session_state.get("topic")
-    candidates = [t for t in st.session_state.topic_bank if t != current]
-
+def pick_new_topic(exclude_topic=None, student_email="", auto_replenish=True):
+    available = get_available_topics(
+        student_email=student_email, auto_replenish=auto_replenish
+    )
+    candidates = [t for t in available if t != exclude_topic]
     if candidates:
         return random.choice(candidates)
-    elif st.session_state.topic_bank:
-        return random.choice(st.session_state.topic_bank)
-    else:
-        return "Imagine you are building a time machine. Which period in history would you visit first?"
+    return random.choice(available)
 
 
-if (
-    "topic" not in st.session_state
-    or st.session_state.topic in completed_topics_set
-):
-    st.session_state.topic = pick_random_topic()
+if "topic" not in st.session_state:
+    st.session_state.topic = pick_new_topic(auto_replenish=True)
 
 
-def switch_to_next_topic():
-    st.session_state.topic = pick_random_topic()
+def handle_new_topic():
+    current = st.session_state.get("topic", "")
+    email = st.session_state.get("student_email_input", "")
+    st.session_state.topic = pick_new_topic(
+        exclude_topic=current, student_email=email, auto_replenish=True
+    )
 
 
-def remove_disliked_topic():
-    disliked_topic = st.session_state.topic
-    if disliked_topic in st.session_state.topic_bank:
-        st.session_state.topic_bank.remove(disliked_topic)
-    st.session_state.topic = pick_random_topic()
+def handle_skip_topic():
+    current = st.session_state.get("topic", "")
+    email = st.session_state.get("student_email_input", "")
+    if current:
+        st.session_state.skipped_topics.add(current)
+    st.session_state.topic = pick_new_topic(
+        exclude_topic=current, student_email=email, auto_replenish=True
+    )
 
 
 # ---------------------------------------------------------
@@ -228,20 +454,38 @@ if page == "✍️ Daily Practice":
     student_name = raw_name.strip() if raw_name.strip() else "Student"
     student_email = raw_email.strip().lower()
 
+    # Show subtle pool status so students/parents know how many fresh topics remain
+    master_bank = load_topic_bank()
+    all_history = load_history()
+    done_count = (
+        len({
+            item["topic"]
+            for item in all_history
+            if item.get("email", "").strip().lower() == student_email
+        })
+        if student_email
+        else 0
+    )
+    remaining_count = max(0, len(master_bank) - done_count)
+
     st.markdown("---")
     st.info(f"📌 **Today's Topic:**\n\n### {st.session_state.topic}")
+    if student_email:
+        st.caption(
+            f"🗂️ Topic Bank Status: **{remaining_count}** fresh topics left for {student_name} (Auto-adds +35 when ≤ 5 left)"
+        )
 
     col1, col2 = st.columns([1, 1])
     with col1:
         st.button(
             "🔄 New Topic (Keep for later)",
-            on_click=switch_to_next_topic,
+            on_click=handle_new_topic,
             use_container_width=True,
         )
     with col2:
         st.button(
             "❌ Not Interested (Skip topic)",
-            on_click=remove_disliked_topic,
+            on_click=handle_skip_topic,
             use_container_width=True,
         )
 
@@ -384,7 +628,6 @@ Sent automatically by Daily English Writing Challenge App.
                         if full_feedback:
                             break
 
-                    # 自动兜底：如果固定名称均失败，自动获取账号下当前可用的最新 Flash 模型
                     if not full_feedback:
                         try:
                             available_flash = [
@@ -427,6 +670,11 @@ Sent automatically by Daily English Writing Challenge App.
                     )
                     st.toast("📧 Saved to Google Sheets & notification sent!")
 
+                    # Check if uncompleted topics dropped to <= 5 after this submission
+                    get_available_topics(
+                        student_email=student_email, auto_replenish=True
+                    )
+
                 except Exception as e:
                     err_msg = str(e)
                     if "429" in err_msg:
@@ -463,7 +711,7 @@ elif page == "📚 Writing History":
     )
 
     if search_email:
-        all_history = load_history()
+        all_history = load_history(force_refresh=True)
         user_records = [
             rec for rec in all_history if rec.get("email") == search_email
         ]
